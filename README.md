@@ -1,8 +1,8 @@
 # ASR SDK for Go
 
-`github.com/caitunai/asr-sdk-go` 是一个不依赖 Gin、Viper、WebSocket 或具体 VAD 实现的 ASR Go SDK。调用方输入完整的单声道 `float32 PCM` 片段；SDK 负责 PCM16/WAV 编码、供应商调用、相邻双片段窗口、无时间戳 Unicode 对齐、修订事件和尾段确认。
+`github.com/caitunai/asr-sdk-go` 是一个不依赖 Gin、Viper、输入侧 WebSocket 或具体 VAD 实现的 ASR Go SDK。调用方输入单声道 `float32 PCM`；SDK 负责 PCM16/WAV 编码、供应商调用、相邻双片段窗口、无时间戳 Unicode 对齐、修订事件和尾段确认。
 
-SDK 也提供面向连续 PCM 的 `AudioSession` 和 `SegmentedSession`。输入可以来自 WebSocket、命令行文件或麦克风；VAD 通过绝对 sample index 的通用 `SpeechBoundary` 接入，SDK 不导入具体 audio/VAD package。未来的供应商实时 WebSocket 服务使用独立 `StreamingProvider`/`ProviderStream` 接口，不经过 HTTP 窗口调度，也不要求本地 VAD。
+SDK 也提供面向连续 PCM 的 `AudioSession`、`SegmentedSession` 和 `RealtimeSession`。输入可以来自 WebSocket、命令行文件或麦克风；VAD 通过绝对 sample index 的通用 `SpeechBoundary` 接入，SDK 不导入具体 audio/VAD package。供应商实时 WebSocket 使用独立 `StreamingProvider`/`ProviderStream` 接口，不经过 HTTP 窗口调度，也不要求本地 VAD。
 
 完整的应用配置、`GenericHTTPConfig`、`ClientConfig`、`SessionConfig`、`AlignmentConfig` 和 scheduler 语义见 [CONFIGURATION.md](CONFIGURATION.md)。
 
@@ -47,6 +47,62 @@ recognizer, err := asr.NewClient(provider, asr.ClientConfig{
     AudioFormat:    asr.AudioFormatWAVPCM16,
 })
 ```
+
+## Qwen Realtime Provider
+
+`QwenRealtimeProvider` 实现千问实时 ASR 的供应商侧 WebSocket 协议。它在 `Start` 内完成鉴权、`session.update` 和 `session.updated` 握手；`RealtimeSession` 把连续 float32 PCM 转换为 16-bit little-endian PCM，默认聚合成 100ms chunk 后按顺序发送 `input_audio_buffer.append`。Provider 的 `text + stash` 映射成不稳定结果，`completed.transcript` 映射成 stable。
+
+```go
+provider, err := asr.NewQwenRealtimeProvider(asr.QwenRealtimeConfig{
+    Endpoint: "wss://WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+    APIKey:   os.Getenv("DASHSCOPE_API_KEY"),
+    Model:    "qwen3-asr-flash-realtime",
+})
+if err != nil {
+    return err
+}
+
+session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
+    Request: asr.StreamingRequest{
+        Language:   "auto",
+        Context:    asr.RecognitionContext{Prompt: "产品发布会", Terms: []string{"星河系统"}},
+        SampleRate: 16000,
+        Channels:   1,
+        Format:     asr.AudioFormatRawPCM16,
+    },
+})
+```
+
+Qwen adapter 默认启用 server VAD，阈值为 `0.0`，静音确认时长为 `400ms`。一般无需配置；需要覆盖时设置 `ServerVADThreshold`、`ServerVADSilenceDuration`，需要关闭时设置 `DisableServerVAD=true`。启用 server VAD 时，`Finish` 发送 `session.finish`；关闭时先发送 `input_audio_buffer.commit` 再结束会话。`Prompt` 和去重后的 `Terms` 以换行拼成 Qwen `corpus.text`。调用方仍需遵守供应商的 10,000-token corpus 上限。
+
+## Qwen Omni Realtime Provider
+
+`QwenOmniRealtimeProvider` 把 Qwen-Omni-Realtime 会话限制为 ASR-only：只申请 `text` modality，持续发送 16kHz 单声道 PCM，消费 `conversation.item.input_audio_transcription.delta/completed`，并把 partial 映射为 provisional、completed 映射为 stable。server VAD 会自动触发 Omni 的对话响应；Provider 默认在 `response.created` 后立即发送 `response.cancel`，避免把回答混入 ASR 输出。输入结束时会补一小段静音推动尾句完成，并用 `FinishTimeout` 兜底。
+
+```go
+provider, err := asr.NewQwenOmniRealtimeProvider(asr.QwenOmniRealtimeConfig{
+    Endpoint: "wss://WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+    APIKey:   os.Getenv("DASHSCOPE_API_KEY"),
+    Model:    "qwen3.5-omni-plus-realtime",
+})
+if err != nil {
+    return err
+}
+
+session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
+    Request: asr.StreamingRequest{
+        Language:   "auto",
+        SampleRate: 16000,
+        Channels:   1,
+        Format:     asr.AudioFormatRawPCM16,
+        ServerVAD:  provider.ServerVADEnabled(),
+    },
+})
+```
+
+SDK 默认模型为 `qwen3.5-omni-plus-realtime`，默认采用 `semantic_vad`、阈值 `0.5`、静音确认 `800ms`；这些参数可覆盖但一般不必写进应用配置。Adapter 发送空的 `input_audio_transcription: {}` 来启用输入转写，不指定其 `model`，由服务端选择默认实现。该通道当前不发送 prompt、terms 或 language hint。如果目标只是低成本、纯语音转文字，优先使用 `QwenRealtimeProvider`；当同一会话后续还要扩展 Omni 音视频理解时再使用本 Provider。
+
+Omni 在已建立会话中返回的单次事件错误不等于 WebSocket 已失效。Adapter 会忽略“回答已经结束、无法 cancel”的预期竞态错误；其他握手后的事件错误会输出非 final `asr.error`，但继续接收音频。只有握手失败、传输断开或输入结束超时才终止整个实时 session。
 
 ## 单会话请求调度
 

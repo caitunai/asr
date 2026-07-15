@@ -42,6 +42,7 @@ const (
 	FinalizationLongSpeech     FinalizationReason = "long_speech_commit"
 	FinalizationAudioStop      FinalizationReason = "audio_stop"
 	FinalizationRequestTimeout FinalizationReason = "request_timeout_degraded"
+	FinalizationProviderFinal  FinalizationReason = "provider_final"
 )
 
 type EvidenceQuality string
@@ -51,6 +52,7 @@ const (
 	EvidenceProviderTime    EvidenceQuality = "provider_timestamp"
 	EvidenceStandalone      EvidenceQuality = "standalone"
 	EvidenceDegraded        EvidenceQuality = "degraded"
+	EvidenceProviderFinal   EvidenceQuality = "provider_final"
 )
 
 type RecognitionContext struct {

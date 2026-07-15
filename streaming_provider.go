@@ -34,12 +34,17 @@ type StreamingAudioChunk struct {
 }
 
 type ProviderStreamEvent struct {
-	Err      error
-	ResultID string
-	Text     string
-	StartAt  time.Duration
-	EndAt    time.Duration
-	IsFinal  bool
+	Err              error
+	ResultID         string
+	Text             string
+	ConfirmedText    string
+	DraftText        string
+	DetectedLanguage string
+	Emotion          string
+	StartAt          time.Duration
+	EndAt            time.Duration
+	Started          bool
+	IsFinal          bool
 }
 
 // StreamingProvider creates one persistent provider-side ASR stream. It does

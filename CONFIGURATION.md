@@ -7,12 +7,42 @@
 ```toml
 [asr]
 enabled=true
+provider="generic"
 
 [asr.providers.generic]
 baseURL="https://asr.example.com"
 path="/v1/audio/transcriptions"
 apiKey="..."
 ```
+
+Qwen 实时模式使用：
+
+```toml
+[asr]
+enabled=true
+provider="qwenRealtime"
+
+[asr.providers.qwenRealtime]
+endpoint="wss://WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime"
+apiKey="..."
+model="qwen3-asr-flash-realtime"
+audioChunkMs=100
+```
+
+Qwen server VAD 由 SDK 默认启用，默认阈值 `0.0`、静音确认 `400ms`，因此最小应用配置不需要写 VAD 项。下表中的 VAD key 仍可按需覆盖。
+
+Qwen Omni 实时模式可以复用上述 endpoint、API key 和 workspace：
+
+```toml
+[asr]
+enabled=true
+provider="qwenOmniRealtime"
+
+[asr.providers.qwenOmniRealtime]
+model="qwen3.5-omni-plus-realtime"
+```
+
+若 Omni section 未设置 `endpoint`、`apiKey` 或 `workspaceID`，应用会分别读取 `asr.providers.qwenRealtime` 中的同名配置。SDK 默认使用 `semantic_vad`、阈值 `0.5`、静音确认 `800ms`，最小配置无需重复这些稳定参数。
 
 generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response_format=json`。请求上下文中的 prompt 去除首尾空白后非空时才发送 `prompt`；不会发送 model、language、hotwords 或 language_hints。
 
@@ -24,7 +54,7 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | provider adapter 名称。当前应用实现 `generic`；未来 provider 应新增独立 adapter。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime` 或 `qwenOmniRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
 | `asr.requestTimeout` | duration string | `8s` | 否 | 单次 provider HTTP 请求超时，例如 `"8s"`。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
@@ -42,6 +72,35 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.generic.baseURL` | string | 无 | generic 启用时必填 | HTTP 服务根地址。远程必须 HTTPS；localhost/loopback 可用 HTTP。 |
 | `asr.providers.generic.path` | string | 无 | generic 启用时必填 | 转写接口路径，例如 `/v1/audio/transcriptions`。 |
 | `asr.providers.generic.apiKey` | string | 无 | generic 启用时必填 | Bearer API key。应通过环境变量或私密配置注入，不能进入日志或前端。 |
+| `asr.providers.qwenRealtime.endpoint` | string | 无 | qwenRealtime 启用时必填 | 供应商实时 WebSocket URL；远程地址必须使用 `wss`。model query 由 adapter 写入。 |
+| `asr.providers.qwenRealtime.apiKey` | string | 无 | qwenRealtime 启用时必填 | 百炼 API key，只用于供应商侧 Authorization header。 |
+| `asr.providers.qwenRealtime.model` | string | `qwen3-asr-flash-realtime` | 否 | 实时模型名称。 |
+| `asr.providers.qwenRealtime.workspaceID` | string | 空 | 否 | 可选 `X-DashScope-WorkSpace` header；workspace 已在 endpoint 子域中时可留空。 |
+| `asr.providers.qwenRealtime.serverVADEnabled` | bool | SDK 默认 true | 否 | 覆盖供应商 server VAD。显式设为 false 时整次输入在 Finish 时统一 commit。 |
+| `asr.providers.qwenRealtime.serverVADThreshold` | float | SDK 默认 0.0 | 否 | 覆盖 server VAD 阈值，范围 `[-1,1]`。 |
+| `asr.providers.qwenRealtime.serverVADSilenceMs` | duration/ms | SDK 默认 400ms | 否 | 覆盖 server VAD 静音确认时长，范围 200ms–6s。 |
+| `asr.providers.qwenRealtime.audioChunkMs` | duration/ms | 100ms | 否 | 聚合后发送给供应商的 PCM chunk 时长，范围 20ms–1s；Finish 会刷新不足一块的尾音频。 |
+| `asr.providers.qwenRealtime.handshakeTimeout` | duration | 10s | 否 | 等待 `session.updated` 的上限。 |
+| `asr.providers.qwenRealtime.writeTimeout` | duration | 5s | 否 | 单次供应商 WebSocket 写入上限。 |
+| `asr.providers.qwenRealtime.finishTimeout` | duration | 20s | 否 | 发送 `session.finish` 后等待 `session.finished` 的上限。 |
+| `asr.providers.qwenRealtime.eventBuffer` | int | 128 | 否 | Provider 和统一 session 的事件缓冲。 |
+| `asr.providers.qwenRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅限受控开发环境。生产必须用 `wss`。 |
+| `asr.providers.qwenOmniRealtime.endpoint` | string | 继承 qwenRealtime | Omni 启用且无法继承时必填 | Omni 实时 WebSocket URL。 |
+| `asr.providers.qwenOmniRealtime.apiKey` | string | 继承 qwenRealtime | Omni 启用且无法继承时必填 | 百炼 API key。 |
+| `asr.providers.qwenOmniRealtime.workspaceID` | string | 继承 qwenRealtime | 否 | 可选 workspace header。 |
+| `asr.providers.qwenOmniRealtime.model` | string | `qwen3.5-omni-plus-realtime` | 否 | Omni 会话模型；Adapter 不指定 `input_audio_transcription.model`。 |
+| `asr.providers.qwenOmniRealtime.turnDetectionType` | string | `semantic_vad` | 否 | `semantic_vad` 或 `server_vad`。 |
+| `asr.providers.qwenOmniRealtime.serverVADEnabled` | bool | SDK 默认 true | 否 | 是否由供应商自动切句；false 时 Finish 发送 commit。 |
+| `asr.providers.qwenOmniRealtime.vadThreshold` | float | SDK 默认 0.5 | 否 | VAD 阈值，范围 `[-1,1]`。 |
+| `asr.providers.qwenOmniRealtime.vadSilenceMs` | duration/ms | SDK 默认 800ms | 否 | VAD 静音确认时长，范围 200ms–6s。 |
+| `asr.providers.qwenOmniRealtime.instructions` | string | SDK 的 ASR-only 指令 | 否 | 给 Omni 主模型的指令；不会作为输入转写 prompt。 |
+| `asr.providers.qwenOmniRealtime.keepModelResponses` | bool | false | 否 | 是否保留 Omni 对话回答。ASR-only 场景应保持 false。 |
+| `asr.providers.qwenOmniRealtime.audioChunkMs` | duration/ms | 100ms | 否 | 聚合后发送的 PCM chunk 时长。 |
+| `asr.providers.qwenOmniRealtime.handshakeTimeout` | duration | 10s | 否 | 等待 `session.updated` 的上限。 |
+| `asr.providers.qwenOmniRealtime.writeTimeout` | duration | 5s | 否 | 单次供应商 WebSocket 写入上限。 |
+| `asr.providers.qwenOmniRealtime.finishTimeout` | duration | 20s | 否 | 输入结束后等待最后转写结果的硬上限。 |
+| `asr.providers.qwenOmniRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 事件缓冲。 |
+| `asr.providers.qwenOmniRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅限受控开发环境。 |
 
 `duration/ms` 表示应用 loader 同时接受 Go duration 字符串（如 `900ms`、`3s`）或正整数毫秒。`asr.requestTimeout` 应使用 Go duration 字符串。
 
@@ -149,9 +208,19 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 
 `SpeechBoundary` 不属于应用配置，但调用方必须保证 source index 和绝对 sample index 单调。`FinalAudioChunk.FinalBoundaries` 只传 finish-time delta。
 
-## Streaming Provider 配置边界
+## `QwenRealtimeConfig` 与实时会话
 
-未来供应商 WebSocket adapter 使用 `StreamingRequest` 和 `StreamingCapabilities`。连接超时、write timeout、read idle timeout、ping interval、finalization timeout 和 server VAD 等字段属于具体 adapter 配置，不与 HTTP `ClientConfig` 或 `SegmentedSessionConfig` 混用。实时音频 FIFO 满时不能覆盖 PCM，应阻塞或返回 `ErrStreamingBackpressure`。
+Qwen adapter 使用 `StreamingRequest` 和 `StreamingCapabilities`。`Endpoint`、`APIKey`、`Model`、server VAD、握手/写入/结束超时属于 adapter 配置，不与 HTTP `ClientConfig` 或 `SegmentedSessionConfig` 混用。`RealtimeSession` 串行写入每个 PCM chunk；前一次写入未完成时后续 `Push` 会背压，绝不覆盖或跳过音频。
+
+实时会话只支持单声道 raw PCM16，Qwen adapter 接受 8kHz 或 16kHz。`RecognitionContext.Prompt` 和去重后的 `Terms` 按行组成 `input_audio_transcription.corpus.text`；语言不是 `auto` 时发送 `language`，否则可取第一个 language hint。partial 的已确认 `text` 与可变 `stash` 原样拼接，最终 `transcript` 产生 `provider_final` stable 结果。
+
+## `QwenOmniRealtimeConfig`
+
+Omni adapter 与普通 Qwen realtime adapter 共享连接、串行 PCM writer、事件和错误分类，但协议策略不同：只接受 16kHz 单声道 raw PCM16；默认 `semantic_vad`；读取 `input_audio_transcription.delta/completed`；默认取消自动创建的模型回答；输入结束时不发送普通 Qwen ASR 协议的 `session.finish`。
+
+`TurnDetectionType` 可设为 `semantic_vad` 或 `server_vad`，`VADThreshold` 使用指针区分“未设置”和显式 `0`。`DisableServerVAD=true` 时由 `CloseInput` 发送 `input_audio_buffer.commit`。`KeepModelResponses=true` 只会停止自动 cancel，SDK 仍不会把 Omni 回答作为 ASR 文本事件输出。
+
+Adapter 使用空对象 `input_audio_transcription: {}` 启用输入转写，不发送其 `model` 字段，由服务端选择默认实现。`Instructions` 只影响 Omni 主模型，不会成为转写 prompt；`StreamingCapabilities` 因此明确声明不支持 prompt、terms 和 language hints。
 
 ## `AlignmentConfig`
 

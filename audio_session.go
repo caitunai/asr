@@ -47,6 +47,25 @@ type InputRequirements struct {
 	SpeechBoundariesOptional bool
 }
 
+// AudioSessionRequest contains only source/session metadata. Provider and
+// scheduling policy remain owned by the factory implementation.
+type AudioSessionRequest struct {
+	SessionID          string
+	Language           string
+	LanguageHints      []string
+	Context            RecognitionContext
+	SampleRate         int
+	Channels           int
+	MaxBufferedSamples int
+}
+
+// AudioSessionFactory lets applications select a segmented HTTP or realtime
+// streaming backend without coupling their input transport to either one.
+type AudioSessionFactory interface {
+	Mode() AudioSessionMode
+	NewAudioSession(ctx context.Context, request AudioSessionRequest) (AudioSession, error)
+}
+
 // AudioSession is transport-neutral. PCM may come from a WebSocket, a file, a
 // microphone, or any other source.
 type AudioSession interface {
