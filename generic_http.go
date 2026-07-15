@@ -222,8 +222,8 @@ func (p *GenericHTTPProvider) requestFormData(request ProviderRequest) (map[stri
 
 func normalizeGenericHTTPConfig(cfg GenericHTTPConfig) (GenericHTTPConfig, error) {
 	parsedURL, err := url.Parse(cfg.BaseURL)
-	validScheme := parsedURL.Scheme == "https" ||
-		(parsedURL.Scheme == "http" && (cfg.AllowInsecureHTTP || isLoopbackHost(parsedURL.Hostname())))
+	validScheme := parsedURL.Scheme == httpSchemeSecure ||
+		(parsedURL.Scheme == httpSchemeInsecure && (cfg.AllowInsecureHTTP || isLoopbackHost(parsedURL.Hostname())))
 	if err != nil || parsedURL.Host == "" || !validScheme || parsedURL.User != nil {
 		return cfg, ErrInvalidConfig
 	}

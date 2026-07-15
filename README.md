@@ -132,6 +132,35 @@ Finish 会提交剩余 PCM、补充一小段尾部静音，并等待已经自动
 
 当前 Provider 不发送 `RecognitionContext.Prompt` 或 terms；明确语言会转换成 ISO-639-1 主语言代码，`auto` 不发送 language。服务端 delta 累积为 provisional，completed 直接成为 stable。
 
+## Gemini Realtime Provider
+
+`GeminiRealtimeProvider` 直接实现 Gemini Live API 的 raw WebSocket 协议，使用 `inputAudioTranscription` 获得用户输入语音文本。它不依赖浏览器 WebSocket，可由服务端、命令行音频读取程序或其他 Go package 直接创建。
+
+```go
+provider, err := asr.NewGeminiRealtimeProvider(asr.GeminiRealtimeConfig{
+    APIKey: os.Getenv("GEMINI_API_KEY"),
+})
+if err != nil {
+    return err
+}
+
+session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
+    Request: asr.StreamingRequest{
+        Language:   "auto",
+        SampleRate: 16000,
+        Channels:   1,
+        Format:     asr.AudioFormatRawPCM16,
+    },
+    ChunkDuration: 40 * time.Millisecond,
+})
+```
+
+SDK 默认连接 Gemini v1beta `BidiGenerateContent` endpoint，使用 `gemini-3.1-flash-live-preview`。API key 按官方 raw WebSocket 协议放入认证 query，SDK 不会把完整 URL 或 key 写入事件和日志。首包发送 setup 并等待 `setupComplete`；16kHz mono PCM16 直接发送，其他受支持采样率才连续重采样为 16kHz，默认使用 40ms chunk。自动 VAD 默认使用 300ms prefix padding、300ms silence duration、高起音灵敏度和高结束灵敏度，使长音频中的短停顿能及时形成输入 turn；这是偏低延迟的 ASR 策略，若慢速口述被切得过碎，可增加静音时长或降低结束灵敏度。
+
+新闻播报、配乐节目等音频可能长期保持 activity，单靠 Server VAD 无法给出确定的出字上限。SDK 默认统计发送到 Gemini 的 16kHz sample clock：若连续 15 秒仍未收到自然 turn boundary，会在下一块音频前发送一次 `audioStreamEnd`，随后在同一 WebSocket 和上下文中继续发送。这个刷新不会结束 ASR session；最终 Finish 仍只负责剩余尾段。可通过 `MaxContinuousTurn` 调整上限，或设置 `DisableContinuousTurnFlush=true` 关闭。
+
+`inputTranscription` 先产生 provisional；收到 generation/turn complete 后，SDK 继续等待短暂 drain 再产生 stable，以容纳 Gemini 明确不保证顺序的转写事件。`interrupted=true` 只表示旧的模型输出被新语音打断，不会确认当前输入文本。Finish 发送 `audioStreamEnd=true`；若供应商没有返回明确边界，则使用有界 idle 回退确认尾段，最终仍由硬超时终止。默认开启 sliding-window context compression，避免长会话音频 token 持续累积。
+
 ## 单会话请求调度
 
 需要同时提交高频中间结果和不可丢失正式结果时，用 `ScheduledRecognizer` 包装供应商客户端，再把包装后的 `Recognizer` 交给 `Session` 和中间识别调用方：

@@ -57,6 +57,19 @@ apiKey="..."
 
 默认模型为 `gpt-4o-mini-transcribe`。只有显式切换到 `gpt-realtime-whisper` 时才需要配置 `delay`。
 
+Gemini Live input transcription 使用：
+
+```toml
+[asr]
+enabled=true
+provider="geminiRealtime"
+
+[asr.providers.geminiRealtime]
+apiKey="..."
+```
+
+默认模型为 `gemini-3.1-flash-live-preview`，自动 VAD、16kHz 重采样和长会话上下文压缩由 SDK 配置。
+
 generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response_format=json`。请求上下文中的 prompt 去除首尾空白后非空时才发送 `prompt`；不会发送 model、language、hotwords 或 language_hints。
 
 ## 应用层完整配置
@@ -67,7 +80,7 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime` 或 `openaiRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime` 或 `geminiRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
 | `asr.requestTimeout` | duration string | `8s` | 否 | 单次 provider HTTP 请求超时，例如 `"8s"`。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
@@ -131,6 +144,25 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.openaiRealtime.finishTimeout` | duration | 20s | 否 | 尾部 commit 后等待全部 final 结果的上限。 |
 | `asr.providers.openaiRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
 | `asr.providers.openaiRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
+| `asr.providers.geminiRealtime.endpoint` | string | Gemini v1beta BidiGenerateContent WSS | 否 | Gemini Live WebSocket URL；API key 由 SDK 写入认证 query，不记录到日志。 |
+| `asr.providers.geminiRealtime.model` | string | `gemini-3.1-flash-live-preview` | 否 | Gemini Live 模型名称，可带或不带 `models/` 前缀。 |
+| `asr.providers.geminiRealtime.apiKey` | string | 无 | geminiRealtime 启用时必填 | Gemini Developer API key。 |
+| `asr.providers.geminiRealtime.systemInstruction` | string | SDK 极简确认指令 | 否 | 要求模型在每轮只给极短中性确认；输出音频会被 adapter 丢弃。可按部署需要覆盖。 |
+| `asr.providers.geminiRealtime.startOfSpeechSensitivity` | string | `START_SENSITIVITY_HIGH` | 否 | 自动 VAD 起音灵敏度，支持 `START_SENSITIVITY_HIGH/LOW`。 |
+| `asr.providers.geminiRealtime.endOfSpeechSensitivity` | string | `END_SENSITIVITY_HIGH` | 否 | 自动 VAD 结束灵敏度，支持 `END_SENSITIVITY_HIGH/LOW`；默认 HIGH 让较短停顿也能及时结束输入 turn。长篇慢速口述若切分过碎可改为 LOW。 |
+| `asr.providers.geminiRealtime.prefixPaddingMs` | duration/ms | 300ms | 否 | 起音检测前保留的音频，降低首音节截断风险。 |
+| `asr.providers.geminiRealtime.silenceDurationMs` | duration/ms | 300ms | 否 | 自动 VAD 确认一轮结束的静音长度。面向低延迟 ASR 默认使用 300ms，使新闻播报中的短停顿更快形成 turn；若慢速口述被切分过碎，可调回 500–800ms。 |
+| `asr.providers.geminiRealtime.continuousTurnFlushEnabled` | bool | true | 否 | 连续语音长期没有服务端 VAD 边界时，是否使用可恢复的 `audioStreamEnd` 强制刷新当前输入流。关闭后，无停顿音频可能直到 Finish 才返回转写。 |
+| `asr.providers.geminiRealtime.maxContinuousTurnMs` | duration/ms | 15s | 否 | 距离最近一次 Gemini turn boundary 的最大连续音频时长，范围 2s–5min。达到后会在下一音频块前刷新，连接和上下文保持不变。 |
+| `asr.providers.geminiRealtime.finalTranscriptDrainMs` | duration/ms | 500ms | 否 | 收到生成/轮次完成后继续等待无序 inputTranscription 事件的窗口。 |
+| `asr.providers.geminiRealtime.finishIdleTimeoutMs` | duration/ms | 2s | 否 | `audioStreamEnd` 后未收到明确边界时，以转写空闲确认尾段的回退窗口。 |
+| `asr.providers.geminiRealtime.audioChunkMs` | duration/ms | 40ms | 否 | 应用聚合后发送给 Gemini 的 PCM chunk 时长。 |
+| `asr.providers.geminiRealtime.contextWindowCompressionEnabled` | bool | true | 否 | 是否启用 sliding-window 上下文压缩以支持长会话。 |
+| `asr.providers.geminiRealtime.handshakeTimeout` | duration | 10s | 否 | 等待 `setupComplete` 的上限。 |
+| `asr.providers.geminiRealtime.writeTimeout` | duration | 5s | 否 | 单次 WebSocket 写入上限。 |
+| `asr.providers.geminiRealtime.finishTimeout` | duration | 20s | 否 | 输入结束后等待尾部转写的硬上限。 |
+| `asr.providers.geminiRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
+| `asr.providers.geminiRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
 
 `duration/ms` 表示应用 loader 同时接受 Go duration 字符串（如 `900ms`、`3s`）或正整数毫秒。`asr.requestTimeout` 应使用 Go duration 字符串。
 
@@ -257,6 +289,14 @@ Adapter 使用空对象 `input_audio_transcription: {}` 启用输入转写，不
 OpenAI adapter 直接使用 GA Realtime transcription 协议。`Endpoint` 和 `Model` 分别默认采用 `wss://api.openai.com/v1/realtime` 与 `gpt-4o-mini-transcribe`；API key 只放在 Bearer Authorization header，不写入 URL、事件或日志。Adapter 默认使用 `semantic_vad` 和 `eagerness=auto`；需要严格按静音断句时可切换为 `server_vad`，需要应用自行控制边界时可关闭 turn detection。显式选择 `gpt-realtime-whisper` 时 SDK 自动关闭 VAD，并且只有该模型会收到 `Delay`。
 
 Provider 接受 8kHz、16kHz 或 24kHz 单声道 raw PCM16，并在 adapter 内连续重采样为 OpenAI 要求的 24kHz。启用 VAD 时不运行固定周期 commit，服务端自动 commit 的每个 item 都会被跟踪；CloseInput 会补尾部静音并手动 commit，只在全部已知 item 返回 completed/failed 后完成。自动 commit 与尾部 commit 竞态造成的空 buffer 错误属于正常收尾，不作为识别错误上报。服务端 delta 按 `item_id` 累积为 provisional，completed 输出 stable。当前 adapter 未暴露 prompt steering，因此 capability 明确为 false；该模式也不进入 HTTP 相邻窗口对齐。
+
+## `GeminiRealtimeConfig`
+
+Gemini adapter 直接实现 Live API 的 `BidiGenerateContent` raw WebSocket 协议。连接后首包发送 `setup`，并等待 `setupComplete` 后才发送音频；setup 固定启用 `inputAudioTranscription`、`AUDIO` response modality、自动 activity detection 和 `START_OF_ACTIVITY_INTERRUPTS`。模型输出音频不进入 ASR 结果，`interrupted` 只描述上一轮模型输出被打断，不会被错误地当作当前输入语音的结束边界。
+
+Provider 接受常见单声道 raw PCM16 采样率并连续重采样为 Gemini 要求的 16kHz。输入以 40ms chunk 发送；`inputTranscription.text` 同时兼容增量和累积更新，先输出 provisional。由于 Gemini 明确不保证 input transcription 与 `serverContent` 的到达顺序，generation/turn complete 后保留短 drain 窗口，再输出 stable。CloseInput 发送 `audioStreamEnd=true`，明确边界缺失时使用可配置 idle 回退，并始终受 `FinishTimeout` 硬上限保护。
+
+SDK 默认采用高起音灵敏度、低结束灵敏度、300ms prefix padding 和 800ms silence duration，优先保护首音节与句中自然停顿。长会话默认启用 sliding-window context compression。当前 adapter 不把 `RecognitionContext` 声明为 Gemini input transcription 的准确率提示能力，因此 prompt、terms 和 language hints capability 均为 false。
 
 ## `AlignmentConfig`
 

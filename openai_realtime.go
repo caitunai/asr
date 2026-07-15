@@ -51,6 +51,8 @@ const (
 	openAIEventTranscriptionFailed        = "conversation.item.input_audio_transcription.failed"
 	webSocketSchemeSecure                 = "wss"
 	webSocketSchemeInsecure               = "ws"
+	httpSchemeSecure                      = "https"
+	httpSchemeInsecure                    = "http"
 )
 
 type OpenAIRealtimeConfig struct {
@@ -784,9 +786,9 @@ func openAIRealtimeEndpoint(endpoint string, allowInsecure bool) (string, error)
 		return "", errors.Join(ErrInvalidConfig, err)
 	}
 	switch parsed.Scheme {
-	case "https":
+	case httpSchemeSecure:
 		parsed.Scheme = webSocketSchemeSecure
-	case "http":
+	case httpSchemeInsecure:
 		parsed.Scheme = webSocketSchemeInsecure
 	case webSocketSchemeSecure, webSocketSchemeInsecure:
 	default:
