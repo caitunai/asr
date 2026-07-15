@@ -44,6 +44,19 @@ model="qwen3.5-omni-plus-realtime"
 
 若 Omni section 未设置 `endpoint`、`apiKey` 或 `workspaceID`，应用会分别读取 `asr.providers.qwenRealtime` 中的同名配置。SDK 默认使用 `semantic_vad`、阈值 `0.5`、静音确认 `800ms`，最小配置无需重复这些稳定参数。
 
+OpenAI Realtime transcription 使用：
+
+```toml
+[asr]
+enabled=true
+provider="openaiRealtime"
+
+[asr.providers.openaiRealtime]
+apiKey="..."
+```
+
+默认模型为 `gpt-4o-mini-transcribe`。只有显式切换到 `gpt-realtime-whisper` 时才需要配置 `delay`。
+
 generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response_format=json`。请求上下文中的 prompt 去除首尾空白后非空时才发送 `prompt`；不会发送 model、language、hotwords 或 language_hints。
 
 ## 应用层完整配置
@@ -54,7 +67,7 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime` 或 `qwenOmniRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime` 或 `openaiRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
 | `asr.requestTimeout` | duration string | `8s` | 否 | 单次 provider HTTP 请求超时，例如 `"8s"`。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
@@ -101,6 +114,23 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.qwenOmniRealtime.finishTimeout` | duration | 20s | 否 | 输入结束后等待最后转写结果的硬上限。 |
 | `asr.providers.qwenOmniRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 事件缓冲。 |
 | `asr.providers.qwenOmniRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅限受控开发环境。 |
+| `asr.providers.openaiRealtime.endpoint` | string | `wss://api.openai.com/v1/realtime` | 否 | OpenAI Realtime WebSocket URL；SDK 自动添加 `intent=transcription`。 |
+| `asr.providers.openaiRealtime.model` | string | `gpt-4o-mini-transcribe` | 否 | OpenAI 实时转写模型名称。 |
+| `asr.providers.openaiRealtime.apiKey` | string | 无 | openaiRealtime 启用时必填 | 只用于供应商 WebSocket 握手的 Bearer Authorization header。 |
+| `asr.providers.openaiRealtime.delay` | string | `medium` | 否 | 仅用于 `gpt-realtime-whisper` 的 `minimal/low/medium/high/xhigh` 准确率与延迟策略；其他模型不发送该字段。 |
+| `asr.providers.openaiRealtime.turnDetectionEnabled` | bool | true | 否 | 是否使用 OpenAI 远端 turn detection；`gpt-realtime-whisper` 会自动禁用。 |
+| `asr.providers.openaiRealtime.turnDetectionType` | string | `semantic_vad` | 否 | `semantic_vad` 根据语义完整性断句；`server_vad` 根据静音断句。 |
+| `asr.providers.openaiRealtime.semanticVADEagerness` | string | `auto` | 否 | semantic VAD 的 `low`、`medium`、`high` 或 `auto`；越高通常越快断句。 |
+| `asr.providers.openaiRealtime.serverVADThreshold` | float | `0.5` | 否 | server VAD 语音激活阈值，范围 0–1。 |
+| `asr.providers.openaiRealtime.serverVADPrefixPaddingMs` | duration/ms | 300ms | 否 | server VAD 在语音起点前保留的音频。 |
+| `asr.providers.openaiRealtime.serverVADSilenceMs` | duration/ms | 800ms | 否 | server VAD 确认一句结束所需的连续静音。 |
+| `asr.providers.openaiRealtime.commitIntervalMs` | duration/ms | 3s | 否 | 关闭 turn detection 或使用 `gpt-realtime-whisper` 时的手动提交周期，范围 500ms–30s。 |
+| `asr.providers.openaiRealtime.audioChunkMs` | duration/ms | 100ms | 否 | 应用聚合后交给 adapter 的 PCM chunk 时长。 |
+| `asr.providers.openaiRealtime.handshakeTimeout` | duration | 10s | 否 | 等待 `session.updated` 的上限。 |
+| `asr.providers.openaiRealtime.writeTimeout` | duration | 5s | 否 | 单次 WebSocket 写入上限。 |
+| `asr.providers.openaiRealtime.finishTimeout` | duration | 20s | 否 | 尾部 commit 后等待全部 final 结果的上限。 |
+| `asr.providers.openaiRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
+| `asr.providers.openaiRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
 
 `duration/ms` 表示应用 loader 同时接受 Go duration 字符串（如 `900ms`、`3s`）或正整数毫秒。`asr.requestTimeout` 应使用 Go duration 字符串。
 
@@ -221,6 +251,12 @@ Omni adapter 与普通 Qwen realtime adapter 共享连接、串行 PCM writer、
 `TurnDetectionType` 可设为 `semantic_vad` 或 `server_vad`，`VADThreshold` 使用指针区分“未设置”和显式 `0`。`DisableServerVAD=true` 时由 `CloseInput` 发送 `input_audio_buffer.commit`。`KeepModelResponses=true` 只会停止自动 cancel，SDK 仍不会把 Omni 回答作为 ASR 文本事件输出。
 
 Adapter 使用空对象 `input_audio_transcription: {}` 启用输入转写，不发送其 `model` 字段，由服务端选择默认实现。`Instructions` 只影响 Omni 主模型，不会成为转写 prompt；`StreamingCapabilities` 因此明确声明不支持 prompt、terms 和 language hints。
+
+## `OpenAIRealtimeConfig`
+
+OpenAI adapter 直接使用 GA Realtime transcription 协议。`Endpoint` 和 `Model` 分别默认采用 `wss://api.openai.com/v1/realtime` 与 `gpt-4o-mini-transcribe`；API key 只放在 Bearer Authorization header，不写入 URL、事件或日志。Adapter 默认使用 `semantic_vad` 和 `eagerness=auto`；需要严格按静音断句时可切换为 `server_vad`，需要应用自行控制边界时可关闭 turn detection。显式选择 `gpt-realtime-whisper` 时 SDK 自动关闭 VAD，并且只有该模型会收到 `Delay`。
+
+Provider 接受 8kHz、16kHz 或 24kHz 单声道 raw PCM16，并在 adapter 内连续重采样为 OpenAI 要求的 24kHz。启用 VAD 时不运行固定周期 commit，服务端自动 commit 的每个 item 都会被跟踪；CloseInput 会补尾部静音并手动 commit，只在全部已知 item 返回 completed/failed 后完成。自动 commit 与尾部 commit 竞态造成的空 buffer 错误属于正常收尾，不作为识别错误上报。服务端 delta 按 `item_id` 累积为 provisional，completed 输出 stable。当前 adapter 未暴露 prompt steering，因此 capability 明确为 false；该模式也不进入 HTTP 相邻窗口对齐。
 
 ## `AlignmentConfig`
 

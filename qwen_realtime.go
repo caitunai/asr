@@ -31,12 +31,16 @@ const (
 	qwenFieldText                       = "text"
 	qwenFieldSession                    = "session"
 	qwenFieldAudio                      = "audio"
+	qwenFieldThreshold                  = "threshold"
+	qwenFieldSilenceDuration            = "silence_duration_ms"
 	qwenAudioFormatPCM                  = "pcm"
 	qwenEventSessionUpdate              = "session.update"
 	qwenEventSessionUpdated             = "session.updated"
 	qwenEventAudioAppend                = "input_audio_buffer.append"
+	qwenEventAudioCommit                = "input_audio_buffer.commit"
 	qwenEventSpeechStarted              = "input_audio_buffer.speech_started"
 	qwenEventSpeechStopped              = "input_audio_buffer.speech_stopped"
+	qwenEventTranscriptionDelta         = "conversation.item.input_audio_transcription.delta"
 	qwenEventTranscriptionCompleted     = "conversation.item.input_audio_transcription.completed"
 	qwenEventError                      = "error"
 	qwenOmniFinishPadding               = 100 * time.Millisecond
@@ -291,7 +295,7 @@ func (s *qwenRealtimeStream) CloseInput(ctx context.Context) error {
 	if !s.request.ServerVAD {
 		if err := s.writeEvent(ctx, map[string]any{
 			qwenFieldEventID: s.nextEventID("commit"),
-			qwenFieldType:    "input_audio_buffer.commit",
+			qwenFieldType:    qwenEventAudioCommit,
 		}); err != nil {
 			s.fail(err)
 			return err
@@ -330,7 +334,7 @@ func (s *qwenRealtimeStream) closeOmniInputLocked(ctx context.Context) error {
 		s.scheduleOmniIdleCompletion(paddingDuration + qwenOmniIdleDrain)
 	} else if err := s.writeEvent(ctx, map[string]any{
 		qwenFieldEventID: s.nextEventID("commit"),
-		qwenFieldType:    "input_audio_buffer.commit",
+		qwenFieldType:    qwenEventAudioCommit,
 	}); err != nil {
 		s.fail(err)
 		return err
@@ -400,9 +404,9 @@ func (s *qwenRealtimeStream) sendSessionUpdate(ctx context.Context) error {
 	}
 	if s.request.ServerVAD {
 		session["turn_detection"] = map[string]any{
-			qwenFieldType:         "server_vad",
-			"threshold":           s.provider.cfg.ServerVADThreshold,
-			"silence_duration_ms": s.provider.cfg.ServerVADSilenceDuration.Milliseconds(),
+			qwenFieldType:            "server_vad",
+			qwenFieldThreshold:       s.provider.cfg.ServerVADThreshold,
+			qwenFieldSilenceDuration: s.provider.cfg.ServerVADSilenceDuration.Milliseconds(),
 		}
 	} else {
 		session["turn_detection"] = nil
@@ -425,9 +429,9 @@ func (s *qwenRealtimeStream) sendOmniSessionUpdate(ctx context.Context) error {
 	}
 	if s.request.ServerVAD {
 		session["turn_detection"] = map[string]any{
-			qwenFieldType:         s.provider.omni.turnDetectionType,
-			"threshold":           s.provider.cfg.ServerVADThreshold,
-			"silence_duration_ms": s.provider.cfg.ServerVADSilenceDuration.Milliseconds(),
+			qwenFieldType:            s.provider.omni.turnDetectionType,
+			qwenFieldThreshold:       s.provider.cfg.ServerVADThreshold,
+			qwenFieldSilenceDuration: s.provider.cfg.ServerVADSilenceDuration.Milliseconds(),
 		}
 	} else {
 		session["turn_detection"] = nil
@@ -500,8 +504,7 @@ func (s *qwenRealtimeStream) readLoop() {
 			itemTime := s.itemTimes[event.ItemID]
 			itemTime.end = time.Duration(event.AudioEnd) * time.Millisecond
 			s.itemTimes[event.ItemID] = itemTime
-		case "conversation.item.input_audio_transcription.text",
-			"conversation.item.input_audio_transcription.delta":
+		case "conversation.item.input_audio_transcription.text", qwenEventTranscriptionDelta:
 			itemTime := s.itemTimes[event.ItemID]
 			s.emit(ProviderStreamEvent{
 				ResultID:         event.ItemID,
@@ -738,13 +741,14 @@ func normalizeQwenRealtimeConfig(cfg QwenRealtimeConfig) (QwenRealtimeConfig, er
 	}
 	parsed, err := url.Parse(cfg.Endpoint)
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
-		(parsed.Scheme != "wss" && parsed.Scheme != "ws") {
+		(parsed.Scheme != webSocketSchemeSecure && parsed.Scheme != webSocketSchemeInsecure) {
 		if err != nil {
 			return cfg, errors.Join(ErrInvalidConfig, err)
 		}
 		return cfg, ErrInvalidConfig
 	}
-	if parsed.Scheme == "ws" && !cfg.AllowInsecureWebSocket && !isLoopbackHost(parsed.Hostname()) {
+	if parsed.Scheme == webSocketSchemeInsecure && !cfg.AllowInsecureWebSocket &&
+		!isLoopbackHost(parsed.Hostname()) {
 		return cfg, ErrInvalidConfig
 	}
 	if cfg.ServerVADThreshold == 0 {

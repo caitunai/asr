@@ -104,6 +104,34 @@ SDK 默认模型为 `qwen3.5-omni-plus-realtime`，默认采用 `semantic_vad`�
 
 Omni 在已建立会话中返回的单次事件错误不等于 WebSocket 已失效。Adapter 会忽略“回答已经结束、无法 cancel”的预期竞态错误；其他握手后的事件错误会输出非 final `asr.error`，但继续接收音频。只有握手失败、传输断开或输入结束超时才终止整个实时 session。
 
+## OpenAI Realtime Provider
+
+`OpenAIRealtimeProvider` 直接连接 OpenAI GA Realtime transcription WebSocket 服务，也不依赖输入侧 WebSocket。Provider 默认使用 `gpt-4o-mini-transcribe`，连接 `wss://api.openai.com/v1/realtime?intent=transcription`，使用 Bearer API key，并创建 `type=transcription` 的会话。
+
+```go
+provider, err := asr.NewOpenAIRealtimeProvider(asr.OpenAIRealtimeConfig{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+})
+if err != nil {
+    return err
+}
+
+session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
+    Request: asr.StreamingRequest{
+        Language:   "zh-CN",
+        SampleRate: 16000,
+        Channels:   1,
+        Format:     asr.AudioFormatRawPCM16,
+    },
+})
+```
+
+OpenAI 要求 24kHz mono PCM16；Adapter 接受应用常见的 8kHz、16kHz 或 24kHz PCM16，并使用跨 chunk 连续的线性重采样统一转换成 24kHz。SDK 默认启用 `semantic_vad`，`eagerness=auto`，由服务端根据语义完整性自动形成转写 item，避免固定周期在句中断开。也可切换为 `server_vad`，或显式关闭 turn detection；关闭后才按 `CommitInterval`（默认 `3s`）手动 commit。
+
+Finish 会提交剩余 PCM、补充一小段尾部静音，并等待已经自动或手动 commit 的所有 item 返回 completed/failed。自动 VAD 与尾部手动 commit 竞态产生的“空 buffer”错误会被作为已完成收尾处理，不向上报成会话失败。`gpt-realtime-whisper` 不支持转写会话 VAD，因此 SDK 自动使用周期 commit；此模型可设置 `Delay`（`minimal/low/medium/high/xhigh`，默认 `medium`），默认的 `gpt-4o-mini-transcribe` 不发送该专属字段。
+
+当前 Provider 不发送 `RecognitionContext.Prompt` 或 terms；明确语言会转换成 ISO-639-1 主语言代码，`auto` 不发送 language。服务端 delta 累积为 provisional，completed 直接成为 stable。
+
 ## 单会话请求调度
 
 需要同时提交高频中间结果和不可丢失正式结果时，用 `ScheduledRecognizer` 包装供应商客户端，再把包装后的 `Recognizer` 交给 `Session` 和中间识别调用方：
