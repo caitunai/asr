@@ -1,0 +1,36 @@
+version: "2"
+run:
+  concurrency: 1
+  tests: true
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - dupl
+    - errcheck
+    - errorlint
+    - goconst
+    - gocritic
+    - govet
+    - ineffassign
+    - nolintlint
+    - staticcheck
+    - unused
+    - wrapcheck
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # Public SDK structs are grouped by API meaning and JSON readability.
+        - fieldalignment
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters:
+          - goconst
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
