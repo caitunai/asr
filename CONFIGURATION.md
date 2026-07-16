@@ -70,6 +70,19 @@ apiKey="..."
 
 默认模型为 `gemini-3.1-flash-live-preview`，自动 VAD、16kHz 重采样和长会话上下文压缩由 SDK 配置。
 
+ElevenLabs Scribe v2 Realtime 使用：
+
+```toml
+[asr]
+enabled=true
+provider="elevenLabsRealtime"
+
+[asr.providers.elevenLabsRealtime]
+apiKey="..."
+```
+
+默认模型为 `scribe_v2_realtime`，使用 16kHz mono PCM16、VAD commit、300ms 静音确认和 committed stable；不发布缺少 words/置信度的 partial。当前 prompt/`previous_text` 保持禁用，terms 映射为 keyterms。ElevenLabs 默认创建受限 API key，所用 key 必须在控制台显式启用 Speech to Text（`speech_to_text`）权限，否则握手后会返回 `auth_error`。
+
 generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response_format=json`。请求上下文中的 prompt 去除首尾空白后非空时才发送 `prompt`；不会发送 model、language、hotwords 或 language_hints。
 
 ## 应用层完整配置
@@ -80,7 +93,7 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime` 或 `geminiRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime` 或 `elevenLabsRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
 | `asr.requestTimeout` | duration string | `8s` | 否 | 单次 provider HTTP 请求超时，例如 `"8s"`。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
@@ -163,6 +176,28 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.geminiRealtime.finishTimeout` | duration | 20s | 否 | 输入结束后等待尾部转写的硬上限。 |
 | `asr.providers.geminiRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
 | `asr.providers.geminiRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
+| `asr.providers.elevenLabsRealtime.endpoint` | string | `wss://api.elevenlabs.io/v1/speech-to-text/realtime` | 否 | ElevenLabs Realtime STT WebSocket URL；可切换到官方区域驻留 endpoint。 |
+| `asr.providers.elevenLabsRealtime.model` | string | `scribe_v2_realtime` | 否 | Realtime STT 模型 ID。 |
+| `asr.providers.elevenLabsRealtime.apiKey` | string | 无 | elevenLabsRealtime 启用时必填 | 必须具备 `speech_to_text` 权限；只放入 `xi-api-key` 握手 header，不写入 URL、事件或日志。 |
+| `asr.providers.elevenLabsRealtime.commitStrategy` | string | `vad` | 否 | `vad` 由供应商自动提交语音段；`manual` 由 SDK 周期提交。 |
+| `asr.providers.elevenLabsRealtime.vadSilenceThresholdMs` | duration/ms | 300ms | 否 | VAD 提交所需静音，范围 300ms–3s。低延迟默认使用允许的最小值。 |
+| `asr.providers.elevenLabsRealtime.vadThreshold` | float | 0.4 | 否 | VAD 阈值，范围 0.1–0.9。 |
+| `asr.providers.elevenLabsRealtime.minSpeechDurationMs` | duration/ms | 100ms | 否 | 最短语音活动，范围 50ms–2s。 |
+| `asr.providers.elevenLabsRealtime.minSilenceDurationMs` | duration/ms | 100ms | 否 | 最短静音活动，范围 50ms–2s。 |
+| `asr.providers.elevenLabsRealtime.manualCommitIntervalMs` | duration/ms | 20s | 否 | manual 模式的周期提交间隔，范围 1s–30s；VAD 模式不使用。 |
+| `asr.providers.elevenLabsRealtime.includeTimestamps` | bool | true | 否 | 是否请求 word-level timestamps。 |
+| `asr.providers.elevenLabsRealtime.includeLanguageDetection` | bool | true | 否 | 是否在 timestamp committed event 中请求检测语言；timestamps 关闭时 SDK 自动关闭此项。 |
+| `asr.providers.elevenLabsRealtime.noVerbatim` | bool | false | 否 | 是否移除填充词、口误和不流畅表达。严格逐字稿应保持 false。 |
+| `asr.providers.elevenLabsRealtime.filterBackgroundAudio` | bool | false | 否 | 是否过滤背景说话和环境声；供应商不允许与 timestamps 同时启用，因此启用时必须同时设置 `includeTimestamps=false`。 |
+| `asr.providers.elevenLabsRealtime.enableLogging` | bool | true | 否 | 是否允许供应商记录请求；false 的零保留模式仅适用于具备权限的企业账户。 |
+| `asr.providers.elevenLabsRealtime.emitPartials` | bool | false | 否 | 是否把 `partial_transcript` 发布为 preview。ElevenLabs partial 不含 words/置信度，默认关闭以避免显示随后被 final 撤回的猜测。 |
+| `asr.providers.elevenLabsRealtime.minTranscriptLogProb` | float | -5.0 | 否 | 带 timestamps final 的最小 lexical word 平均 logprob；低于阈值的低置信度尾部幻觉会被丢弃。范围 -20–0，越接近 0 越严格。 |
+| `asr.providers.elevenLabsRealtime.audioChunkMs` | duration/ms | 100ms | 否 | PCM chunk 时长；官方建议 100ms–1s。 |
+| `asr.providers.elevenLabsRealtime.handshakeTimeout` | duration | 10s | 否 | 等待 `session_started` 的上限。 |
+| `asr.providers.elevenLabsRealtime.writeTimeout` | duration | 5s | 否 | 单次 WebSocket 写入上限。 |
+| `asr.providers.elevenLabsRealtime.finishTimeout` | duration | 20s | 否 | 尾部强制 commit 后等待 committed transcript 的硬上限。 |
+| `asr.providers.elevenLabsRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
+| `asr.providers.elevenLabsRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
 
 `duration/ms` 表示应用 loader 同时接受 Go duration 字符串（如 `900ms`、`3s`）或正整数毫秒。`asr.requestTimeout` 应使用 Go duration 字符串。
 
@@ -294,9 +329,17 @@ Provider 接受 8kHz、16kHz 或 24kHz 单声道 raw PCM16，并在 adapter 内�
 
 Gemini adapter 直接实现 Live API 的 `BidiGenerateContent` raw WebSocket 协议。连接后首包发送 `setup`，并等待 `setupComplete` 后才发送音频；setup 固定启用 `inputAudioTranscription`、`AUDIO` response modality、自动 activity detection 和 `START_OF_ACTIVITY_INTERRUPTS`。模型输出音频不进入 ASR 结果，`interrupted` 只描述上一轮模型输出被打断，不会被错误地当作当前输入语音的结束边界。
 
-Provider 接受常见单声道 raw PCM16 采样率并连续重采样为 Gemini 要求的 16kHz。输入以 40ms chunk 发送；`inputTranscription.text` 同时兼容增量和累积更新，先输出 provisional。由于 Gemini 明确不保证 input transcription 与 `serverContent` 的到达顺序，generation/turn complete 后保留短 drain 窗口，再输出 stable。CloseInput 发送 `audioStreamEnd=true`，明确边界缺失时使用可配置 idle 回退，并始终受 `FinishTimeout` 硬上限保护。
+Provider 接受常见单声道 raw PCM16 采样率；16kHz 直接发送，其他采样率连续重采样为 Gemini 要求的 16kHz。输入以 40ms chunk 发送；`inputTranscription.text` 同时兼容增量和累积更新，先输出 provisional。由于 Gemini 明确不保证 input transcription 与 `serverContent` 的到达顺序，generation/turn complete 后保留短 drain 窗口，再输出 stable。CloseInput 发送 `audioStreamEnd=true`，明确边界缺失时使用可配置 idle 回退，并始终受 `FinishTimeout` 硬上限保护。
 
-SDK 默认采用高起音灵敏度、低结束灵敏度、300ms prefix padding 和 800ms silence duration，优先保护首音节与句中自然停顿。长会话默认启用 sliding-window context compression。当前 adapter 不把 `RecognitionContext` 声明为 Gemini input transcription 的准确率提示能力，因此 prompt、terms 和 language hints capability 均为 false。
+SDK 默认采用高起音灵敏度、高结束灵敏度、300ms prefix padding 和 300ms silence duration。长会话默认启用 sliding-window context compression；连续 15s 无自然边界时使用可恢复的 `audioStreamEnd` 刷新。当前 adapter 不把 `RecognitionContext` 声明为 Gemini input transcription 的准确率提示能力，因此 prompt、terms 和 language hints capability 均为 false。
+
+## `ElevenLabsRealtimeConfig`
+
+ElevenLabs adapter 直接连接 `/v1/speech-to-text/realtime`，握手使用 `xi-api-key` header，默认模型为 `scribe_v2_realtime`。它支持供应商列出的 8kHz、16kHz、22.05kHz、24kHz、44.1kHz 和 48kHz 单声道 PCM16，并根据输入采样率设置对应 `pcm_*` 格式，不执行无意义的同采样率转换。
+
+默认使用 VAD commit、0.4 阈值、300ms VAD silence、100ms 最短语音和静音。manual 模式按 `ManualCommitInterval` 周期把当前音频块标记为 commit；无论哪种模式，CloseInput 都追加 100ms 尾部静音并强制 commit，等待 committed event 或受 `FinishTimeout` 限制。ElevenLabs partial 不含 words 或置信度，因此默认不发布；显式启用 `EmitPartials` 后才映射为 preview。timestamps 关闭时由 `committed_transcript` 产生 stable；timestamps 开启时，该事件会被忽略，随后到达的 `committed_transcript_with_timestamps` 才产生一次 stable，防止同一提交重复输出。final 是权威结果：空 final 或只包含标点/符号的 final 都表示不能确认当前 partial，绝不会回退到旧 partial；lexical word 平均 logprob 低于 `MinTranscriptLogProb` 的 final 也会被拒绝。若该 turn 已输出 preview，SDK 会发送 `discarded` 修订，让消费者删除该不稳定结果。
+
+当前 adapter 忽略 `RecognitionContext.Prompt`，不发送 `previous_text`，并将 `SupportsPrompt` 声明为 false。去重后的 terms 仍转为握手 query 中的 keyterms；受供应商限制最多发送 50 个、每个最多 20 个 Unicode 字符，超限项会被忽略。明确语言转换为 ISO 主语言代码，`auto` 不发送 `language_code`。`FilterBackgroundAudio` 与 timestamps 互斥，配置同时启用会在启动时返回 `ErrInvalidConfig`。
 
 ## `AlignmentConfig`
 

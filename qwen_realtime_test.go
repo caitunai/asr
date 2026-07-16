@@ -185,7 +185,7 @@ func verifyQwenSessionUpdate(conn *websocket.Conn) error {
 	}
 	session, ok := event["session"].(map[string]any)
 	if !ok || session["input_audio_format"] != qwenAudioFormatPCM ||
-		session["sample_rate"] != float64(16000) {
+		session[realtimeFieldSampleRate] != float64(16000) {
 		return ErrProviderRequest
 	}
 	transcription, ok := session["input_audio_transcription"].(map[string]any)

@@ -45,6 +45,7 @@ type ProviderStreamEvent struct {
 	EndAt            time.Duration
 	Started          bool
 	IsFinal          bool
+	Discarded        bool
 }
 
 // StreamingProvider creates one persistent provider-side ASR stream. It does

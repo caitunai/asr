@@ -386,9 +386,9 @@ func (s *qwenRealtimeStream) sendSessionUpdate(ctx context.Context) error {
 		return s.sendOmniSessionUpdate(ctx)
 	}
 	session := map[string]any{
-		"modalities":         []string{qwenFieldText},
-		"input_audio_format": qwenAudioFormatPCM,
-		"sample_rate":        s.request.SampleRate,
+		"modalities":            []string{qwenFieldText},
+		"input_audio_format":    qwenAudioFormatPCM,
+		realtimeFieldSampleRate: s.request.SampleRate,
 	}
 	transcription := make(map[string]any)
 	if s.request.Language != "" && s.request.Language != automaticLanguage {

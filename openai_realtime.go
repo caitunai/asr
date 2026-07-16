@@ -457,33 +457,19 @@ func (s *openAIRealtimeStream) writeEvent(ctx context.Context, event map[string]
 }
 
 func (s *openAIRealtimeStream) readLoop() {
-	defer s.cancel()
-	defer func() { _ = s.conn.Close() }()
-	defer close(s.events)
-	defer close(s.done)
-	for {
-		_, payload, err := s.conn.ReadMessage()
-		if err != nil {
-			if !s.hasWaitResult() {
-				if s.ctx.Err() != nil {
-					s.setWaitResult(errors.Join(ErrSessionClosed, s.ctx.Err()))
-				} else {
-					s.setWaitResult(errors.Join(ErrProviderUnavailable, err))
-				}
-			}
-			s.signalUpdated(s.currentWaitError())
-			return
-		}
-		var event openAIRealtimeServerEvent
-		if err := json.Unmarshal(payload, &event); err != nil {
-			s.emit(ProviderStreamEvent{Err: errors.Join(ErrProviderResponse, err)})
-			continue
-		}
-		s.handleServerEvent(event)
-		if s.hasWaitResult() {
-			return
-		}
-	}
+	realtimeJSONReadLoop[openAIRealtimeServerEvent]{
+		ctx:              s.ctx,
+		conn:             s.conn,
+		cancel:           s.cancel,
+		events:           s.events,
+		done:             s.done,
+		hasWaitResult:    s.hasWaitResult,
+		setWaitResult:    s.setWaitResult,
+		currentWaitError: s.currentWaitError,
+		signalUpdated:    s.signalUpdated,
+		emit:             s.emit,
+		handleEvent:      s.handleServerEvent,
+	}.run()
 }
 
 func (s *openAIRealtimeStream) handleServerEvent(event openAIRealtimeServerEvent) {

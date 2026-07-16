@@ -161,6 +161,36 @@ SDK 默认连接 Gemini v1beta `BidiGenerateContent` endpoint，使用 `gemini-3
 
 `inputTranscription` 先产生 provisional；收到 generation/turn complete 后，SDK 继续等待短暂 drain 再产生 stable，以容纳 Gemini 明确不保证顺序的转写事件。`interrupted=true` 只表示旧的模型输出被新语音打断，不会确认当前输入文本。Finish 发送 `audioStreamEnd=true`；若供应商没有返回明确边界，则使用有界 idle 回退确认尾段，最终仍由硬超时终止。默认开启 sliding-window context compression，避免长会话音频 token 持续累积。
 
+## ElevenLabs Realtime Provider
+
+`ElevenLabsRealtimeProvider` 实现 Scribe v2 Realtime WebSocket 协议。最小配置只需要 API key：
+
+```go
+provider, err := asr.NewElevenLabsRealtimeProvider(asr.ElevenLabsRealtimeConfig{
+    APIKey: os.Getenv("ELEVENLABS_API_KEY"),
+})
+if err != nil {
+    return err
+}
+
+session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
+    Request: asr.StreamingRequest{
+        Language:   "auto",
+        SampleRate: 16000,
+        Channels:   1,
+        Format:     asr.AudioFormatRawPCM16,
+        Context: asr.RecognitionContext{
+            Terms: []string{"ElevenLabs", "Scribe"},
+        },
+    },
+    ChunkDuration: 100 * time.Millisecond,
+})
+```
+
+SDK 默认连接 `wss://api.elevenlabs.io/v1/speech-to-text/realtime`，模型为 `scribe_v2_realtime`，使用 VAD commit、300ms 静音确认、word timestamps 和语言检测。API key 只放入 `xi-api-key` header；受限 key 必须在 ElevenLabs 控制台启用 Speech to Text（`speech_to_text`）权限。Provider 支持官方 PCM16 采样率并直接声明相应 `pcm_*` 格式；应用默认的 16kHz 不经过重采样。
+
+committed transcript 映射为 stable。ElevenLabs partial 不带 words 或置信度，无法可靠区分临时猜测与有效文本，所以 adapter 默认不发布 partial；需要最低延迟时可显式设置 `EmitPartials=true` 映射为 preview。启用 timestamps 时，普通 committed 事件会被忽略，紧随其后的 timestamp committed 才产生一次 stable，避免同一句重复；空 final 或纯标点 final 表示供应商撤回当前 partial，绝不会回退到旧 partial，默认也会拒绝 lexical word 平均 logprob 低于 -5.0 的低置信度尾部幻觉。启用 partial 后，被拒绝 turn 已经产生的 preview 会收到 `discarded` 修订，消费者应删除对应 segment；真实的高置信度短词仍可正常 stable。当前 adapter 暂不发送 `RecognitionContext.Prompt` 或 `previous_text`，capability 明确为 false；符合限制的 terms 仍转成最多 50 个 keyterms。manual commit 模式默认每 20 秒提交一次，避免长音频积压；Finish 追加 100ms 静音并强制提交尾段。完整参数和限制见 [CONFIGURATION.md](CONFIGURATION.md)。
+
 ## 单会话请求调度
 
 需要同时提交高频中间结果和不可丢失正式结果时，用 `ScheduledRecognizer` 包装供应商客户端，再把包装后的 `Recognizer` 交给 `Session` 和中间识别调用方：

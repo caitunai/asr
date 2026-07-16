@@ -19,6 +19,7 @@ const (
 	TranscriptStateProvisional TranscriptState = "provisional"
 	TranscriptStateStable      TranscriptState = "stable"
 	TranscriptStateDegraded    TranscriptState = "degraded"
+	TranscriptStateDiscarded   TranscriptState = "discarded"
 )
 
 type EventType string

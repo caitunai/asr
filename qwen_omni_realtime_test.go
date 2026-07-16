@@ -186,7 +186,7 @@ func verifyQwenOmniSessionUpdate(conn *websocket.Conn) error {
 		turnDetection["silence_duration_ms"] != float64(defaultQwenOmniVADSilence.Milliseconds()) {
 		return ErrProviderRequest
 	}
-	if _, exists := session["sample_rate"]; exists {
+	if _, exists := session[realtimeFieldSampleRate]; exists {
 		return ErrProviderRequest
 	}
 	return nil

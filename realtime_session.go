@@ -278,6 +278,10 @@ func (s *RealtimeSession) run(ctx context.Context) {
 			s.emitProviderError(providerEvent)
 			continue
 		}
+		if providerEvent.Discarded {
+			s.discardTranscript(providerEvent)
+			continue
+		}
 		s.emitTranscript(providerEvent)
 	}
 	waitErr := s.stream.Wait(context.WithoutCancel(ctx))
@@ -293,6 +297,26 @@ func (s *RealtimeSession) run(ctx context.Context) {
 		Provider:  s.provider.Name(),
 		Model:     s.provider.Model(),
 	})
+}
+
+func (s *RealtimeSession) discardTranscript(providerEvent ProviderStreamEvent) {
+	state, exists := s.items[providerEvent.ResultID]
+	if !exists {
+		return
+	}
+	state.revision++
+	s.emit(Event{
+		Type:      EventSegmentResult,
+		SessionID: s.cfg.Request.SessionID,
+		Provider:  s.provider.Name(),
+		Model:     s.provider.Model(),
+		Segment: &SegmentResult{
+			SegmentIndex: state.index,
+			Revision:     state.revision,
+			State:        TranscriptStateDiscarded,
+		},
+	})
+	delete(s.items, providerEvent.ResultID)
 }
 
 func (s *RealtimeSession) emitTranscript(providerEvent ProviderStreamEvent) {
