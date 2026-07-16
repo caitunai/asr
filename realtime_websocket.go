@@ -19,15 +19,16 @@ type realtimeJSONReadLoop[T any] struct {
 	ctx  context.Context //nolint:containedctx // The provider stream owns this lifecycle.
 	conn *websocket.Conn
 
-	cancel           context.CancelFunc
-	events           chan ProviderStreamEvent
-	done             chan struct{}
-	hasWaitResult    func() bool
-	setWaitResult    func(error)
-	currentWaitError func() error
-	signalUpdated    func(error)
-	emit             func(ProviderStreamEvent)
-	handleEvent      func(T)
+	cancel            context.CancelFunc
+	events            chan ProviderStreamEvent
+	done              chan struct{}
+	hasWaitResult     func() bool
+	setWaitResult     func(error)
+	currentWaitError  func() error
+	signalUpdated     func(error)
+	emit              func(ProviderStreamEvent)
+	handleEvent       func(T)
+	classifyReadError func(error) error
 }
 
 func (loop realtimeJSONReadLoop[T]) run() {
@@ -39,11 +40,14 @@ func (loop realtimeJSONReadLoop[T]) run() {
 		_, payload, err := loop.conn.ReadMessage()
 		if err != nil {
 			if !loop.hasWaitResult() {
+				readErr := errors.Join(ErrProviderUnavailable, err)
 				if loop.ctx.Err() != nil {
-					loop.setWaitResult(errors.Join(ErrSessionClosed, loop.ctx.Err()))
-				} else {
-					loop.setWaitResult(errors.Join(ErrProviderUnavailable, err))
+					readErr = errors.Join(ErrSessionClosed, loop.ctx.Err())
 				}
+				if loop.classifyReadError != nil {
+					readErr = loop.classifyReadError(err)
+				}
+				loop.setWaitResult(readErr)
 			}
 			loop.signalUpdated(loop.currentWaitError())
 			return

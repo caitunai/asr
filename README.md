@@ -191,6 +191,36 @@ SDK 默认连接 `wss://api.elevenlabs.io/v1/speech-to-text/realtime`，模型�
 
 committed transcript 映射为 stable。ElevenLabs partial 不带 words 或置信度，无法可靠区分临时猜测与有效文本，所以 adapter 默认不发布 partial；需要最低延迟时可显式设置 `EmitPartials=true` 映射为 preview。启用 timestamps 时，普通 committed 事件会被忽略，紧随其后的 timestamp committed 才产生一次 stable，避免同一句重复；空 final 或纯标点 final 表示供应商撤回当前 partial，绝不会回退到旧 partial，默认也会拒绝 lexical word 平均 logprob 低于 -5.0 的低置信度尾部幻觉。启用 partial 后，被拒绝 turn 已经产生的 preview 会收到 `discarded` 修订，消费者应删除对应 segment；真实的高置信度短词仍可正常 stable。当前 adapter 暂不发送 `RecognitionContext.Prompt` 或 `previous_text`，capability 明确为 false；符合限制的 terms 仍转成最多 50 个 keyterms。manual commit 模式默认每 20 秒提交一次，避免长音频积压；Finish 追加 100ms 静音并强制提交尾段。完整参数和限制见 [CONFIGURATION.md](CONFIGURATION.md)。
 
+## Inworld Realtime Provider
+
+`InworldRealtimeProvider` 实现 Inworld bidirectional streaming STT WebSocket 协议，默认使用 `inworld/inworld-stt-1`：
+
+```go
+provider, err := asr.NewInworldRealtimeProvider(asr.InworldRealtimeConfig{
+    APIKey: os.Getenv("INWORLD_API_KEY"),
+})
+if err != nil {
+    return err
+}
+
+session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
+    Request: asr.StreamingRequest{
+        Language:   "zh-CN",
+        SampleRate: 16000,
+        Channels:   1,
+        Format:     asr.AudioFormatRawPCM16,
+        Context: asr.RecognitionContext{
+            Terms:  []string{"中央气象台", "Inworld"},
+        },
+    },
+    ChunkDuration: 100 * time.Millisecond,
+})
+```
+
+SDK 连接 `wss://api.inworld.ai/stt/v1/transcribe:streamBidirectional`，使用 `Authorization: Basic <API key>` 握手；API key 不写入 URL、事件或日志。首包是 `transcribeConfig`，音频以 base64 `audioChunk` 持续发送。SDK 解析网关返回的 `result.transcription`：interim 映射 preview，final 映射 stable，同一 turn 复用 result ID；空 final 会撤回该 turn 已发布的 preview。Finish 先发送 `endTurn`，收到尾部 final 后再发送 `closeStream` 并由客户端关闭 WebSocket；`FinishTimeout` 只用于尾部 final 确实没有到达的情况。
+
+默认启用 Inworld server VAD，阈值为官方默认 `0.5`；可设置 `DisableServerVAD=true` 以便仅由 `endTurn` 确认轮次。只有明确设置的 language 会转成 ISO 主语言代码；`auto` 始终省略 language，不会把 language hints 升级为输出语言约束。Inworld `prompts` 是专有名词/关键词偏置，因此 SDK 只发送去重后的 `RecognitionContext.Terms`，不发送通用 `Prompt`，避免中文上下文把英文语音偏置为中文输出。Terms 包含协议明确不接受的 `#`、`/`、`@`、`|` 或控制字符时，SDK 会在连接前返回 `ErrInvalidRequest`。
+
 ## 单会话请求调度
 
 需要同时提交高频中间结果和不可丢失正式结果时，用 `ScheduledRecognizer` 包装供应商客户端，再把包装后的 `Recognizer` 交给 `Session` 和中间识别调用方：

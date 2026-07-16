@@ -83,6 +83,19 @@ apiKey="..."
 
 默认模型为 `scribe_v2_realtime`，使用 16kHz mono PCM16、VAD commit、300ms 静音确认和 committed stable；不发布缺少 words/置信度的 partial。当前 prompt/`previous_text` 保持禁用，terms 映射为 keyterms。ElevenLabs 默认创建受限 API key，所用 key 必须在控制台显式启用 Speech to Text（`speech_to_text`）权限，否则握手后会返回 `auth_error`。
 
+Inworld Realtime STT 使用：
+
+```toml
+[asr]
+enabled=true
+provider="inworldRealtime"
+
+[asr.providers.inworldRealtime]
+apiKey="..."
+```
+
+默认模型为 `inworld/inworld-stt-1`，使用 server VAD、100ms mono PCM16 chunk，并发布 interim preview 和 final stable。SDK 负责 Basic 鉴权、`transcribeConfig`、`audioChunk`、`endTurn` 和 `closeStream` 完整生命周期；只有 terms 作为 Inworld `prompts` 发送，通用 prompt 不会变成输出语言指令。
+
 generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response_format=json`。请求上下文中的 prompt 去除首尾空白后非空时才发送 `prompt`；不会发送 model、language、hotwords 或 language_hints。
 
 ## 应用层完整配置
@@ -93,7 +106,7 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime` 或 `elevenLabsRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime` 或 `inworldRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
 | `asr.requestTimeout` | duration string | `8s` | 否 | 单次 provider HTTP 请求超时，例如 `"8s"`。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
@@ -198,6 +211,22 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.elevenLabsRealtime.finishTimeout` | duration | 20s | 否 | 尾部强制 commit 后等待 committed transcript 的硬上限。 |
 | `asr.providers.elevenLabsRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
 | `asr.providers.elevenLabsRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
+| `asr.providers.inworldRealtime.endpoint` | string | `wss://api.inworld.ai/stt/v1/transcribe:streamBidirectional` | 否 | Inworld bidirectional STT WebSocket URL。 |
+| `asr.providers.inworldRealtime.model` | string | `inworld/inworld-stt-1` | 否 | `provider/model` 格式的 Inworld STT model ID。 |
+| `asr.providers.inworldRealtime.apiKey` | string | 无 | inworldRealtime 启用时必填 | SDK 只将它写入 Basic Authorization header。 |
+| `asr.providers.inworldRealtime.serverVADEnabled` | bool | true | 否 | 是否使用 Inworld STT 1 服务端 turn detection；false 时发送 `vadThreshold=0`。 |
+| `asr.providers.inworldRealtime.vadThreshold` | float | 0.5 | 否 | Inworld STT 1 VAD 阈值，范围 0–1。 |
+| `asr.providers.inworldRealtime.minEndOfTurnSilenceMs` | duration/ms | 供应商默认 | 否 | 高置信度时确认 turn end 的最小静音毫秒数。 |
+| `asr.providers.inworldRealtime.endOfTurnConfidenceThreshold` | float | 0.5（供应商默认） | 否 | end-of-turn 预测置信度阈值，范围 0–1；越高越不易误断句。 |
+| `asr.providers.inworldRealtime.inactivityTimeoutSeconds` | int | 供应商默认 | 否 | 输入静默多少秒后停止转写；整数按秒解析。 |
+| `asr.providers.inworldRealtime.includeWordTimestamps` | bool | false | 否 | 请求 word timestamps；`inworld/inworld-stt-1` 暂不支持，仅在所选模型支持时启用。 |
+| `asr.providers.inworldRealtime.emitPartials` | bool | true | 否 | 是否把 interim transcription 映射为 preview。 |
+| `asr.providers.inworldRealtime.audioChunkMs` | duration/ms | 100ms | 否 | 应用聚合后交给 Inworld adapter 的 PCM chunk 时长。 |
+| `asr.providers.inworldRealtime.handshakeTimeout` | duration | 10s | 否 | WebSocket HTTP upgrade 的超时上限。 |
+| `asr.providers.inworldRealtime.writeTimeout` | duration | 5s | 否 | 单次 WebSocket 配置/音频/结束事件写入上限。 |
+| `asr.providers.inworldRealtime.finishTimeout` | duration | 20s | 否 | `endTurn` 后等待尾部 final 的硬上限；final 后 SDK 发送 `closeStream` 并主动关闭。 |
+| `asr.providers.inworldRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
+| `asr.providers.inworldRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
 
 `duration/ms` 表示应用 loader 同时接受 Go duration 字符串（如 `900ms`、`3s`）或正整数毫秒。`asr.requestTimeout` 应使用 Go duration 字符串。
 
@@ -340,6 +369,12 @@ ElevenLabs adapter 直接连接 `/v1/speech-to-text/realtime`，握手使用 `xi
 默认使用 VAD commit、0.4 阈值、300ms VAD silence、100ms 最短语音和静音。manual 模式按 `ManualCommitInterval` 周期把当前音频块标记为 commit；无论哪种模式，CloseInput 都追加 100ms 尾部静音并强制 commit，等待 committed event 或受 `FinishTimeout` 限制。ElevenLabs partial 不含 words 或置信度，因此默认不发布；显式启用 `EmitPartials` 后才映射为 preview。timestamps 关闭时由 `committed_transcript` 产生 stable；timestamps 开启时，该事件会被忽略，随后到达的 `committed_transcript_with_timestamps` 才产生一次 stable，防止同一提交重复输出。final 是权威结果：空 final 或只包含标点/符号的 final 都表示不能确认当前 partial，绝不会回退到旧 partial；lexical word 平均 logprob 低于 `MinTranscriptLogProb` 的 final 也会被拒绝。若该 turn 已输出 preview，SDK 会发送 `discarded` 修订，让消费者删除该不稳定结果。
 
 当前 adapter 忽略 `RecognitionContext.Prompt`，不发送 `previous_text`，并将 `SupportsPrompt` 声明为 false。去重后的 terms 仍转为握手 query 中的 keyterms；受供应商限制最多发送 50 个、每个最多 20 个 Unicode 字符，超限项会被忽略。明确语言转换为 ISO 主语言代码，`auto` 不发送 `language_code`。`FilterBackgroundAudio` 与 timestamps 互斥，配置同时启用会在启动时返回 `ErrInvalidConfig`。
+
+## `InworldRealtimeConfig`
+
+Inworld adapter 首包发送 `transcribeConfig`，然后按序发送 base64 `audioChunk`。它接受常见 8kHz–48kHz 单声道 raw PCM16，并向服务端明确声明原始 sample rate，不做无意义的 16kHz 到 16kHz 重采样。网关响应使用 `result.transcription`：interim 作为 preview，final 作为 stable；空 final 会撤回已发布 preview。CloseInput 先发送 `endTurn`，收到尾部 final 后再发送 `closeStream`、设置成功结果并主动关闭连接，不依赖服务端 WebSocket close frame。
+
+默认模型使用 `inworldSttV1Config.vadThreshold=0.5`；`DisableServerVAD` 只适用于 `inworld/inworld-stt-1`，SDK 会发送阈值 0 改用 manual `endTurn`。Inworld `prompts` 的语义是专有名词/关键词偏置，SDK 因此忽略 `RecognitionContext.Prompt`，只发送去重 terms；含有网关明确拒绝的 `#`/`/`/`@`/`|` 或控制字符时会在连接前失败。只有明确设置的 language 会转成 ISO 主语言代码；`auto` 不发送 language，language hints 也不会被升级为单一语言约束。
 
 ## `AlignmentConfig`
 
