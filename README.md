@@ -221,6 +221,22 @@ SDK 连接 `wss://api.inworld.ai/stt/v1/transcribe:streamBidirectional`，使用
 
 默认启用 Inworld server VAD，阈值为官方默认 `0.5`；可设置 `DisableServerVAD=true` 以便仅由 `endTurn` 确认轮次。只有明确设置的 language 会转成 ISO 主语言代码；`auto` 始终省略 language，不会把 language hints 升级为输出语言约束。Inworld `prompts` 是专有名词/关键词偏置，因此 SDK 只发送去重后的 `RecognitionContext.Terms`，不发送通用 `Prompt`，避免中文上下文把英文语音偏置为中文输出。Terms 包含协议明确不接受的 `#`、`/`、`@`、`|` 或控制字符时，SDK 会在连接前返回 `ErrInvalidRequest`。
 
+## vLLM Realtime Provider
+
+`VLLMRealtimeProvider` 实现 vLLM Realtime STT `/v1/realtime` 协议，默认连接本机 vLLM 并使用 Voxtral Mini Realtime：
+
+```go
+provider, err := asr.NewVLLMRealtimeProvider(asr.VLLMRealtimeConfig{
+    Endpoint: "ws://127.0.0.1:8000/v1/realtime",
+    Model:    "mistralai/Voxtral-Mini-4B-Realtime-2602",
+    // APIKey: os.Getenv("VLLM_API_KEY"), // vLLM 启用 --api-key 时设置
+})
+```
+
+Provider 等待 `session.created` 后发送 `session.update`，再以非 final commit 启动实时生成。输入必须是 16kHz mono PCM16；音频以 base64 append 连续发送。vLLM 的 delta 是追加式 token，SDK 将累计文本映射为 provisional；`transcription.done` 的完整文本映射 stable。Finish 发送一次 `commit(final=true)` 并等待 done，不会提前关闭连接或重复 final commit。该协议当前没有 server VAD、language、prompt 或 terms 能力，API key 可选。
+
+已知限制：vLLM 的 Qwen3-ASR realtime 实现目前可能重复内部音频片段并泄漏 `language ...<asr_text>` 原始标记（vllm-project/vllm#35767）。由于协议没有片段 ID 或 rollback 元数据，SDK 不执行可能误删真实重复语句的猜测式去重；实时模式应使用 Voxtral，Qwen3-ASR 暂用 HTTP transcription endpoint。
+
 ## 单会话请求调度
 
 需要同时提交高频中间结果和不可丢失正式结果时，用 `ScheduledRecognizer` 包装供应商客户端，再把包装后的 `Recognizer` 交给 `Session` 和中间识别调用方：

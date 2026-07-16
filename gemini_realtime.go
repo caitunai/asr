@@ -403,7 +403,7 @@ func (s *geminiRealtimeStream) sendSetup(ctx context.Context) error {
 func (s *geminiRealtimeStream) writeAudioLocked(ctx context.Context, data []byte) error {
 	return s.writeEvent(ctx, map[string]any{
 		"realtimeInput": map[string]any{
-			"audio": map[string]any{
+			qwenFieldAudio: map[string]any{
 				"data":     base64.StdEncoding.EncodeToString(data),
 				"mimeType": geminiAudioMIMEType,
 			},

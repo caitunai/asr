@@ -96,6 +96,21 @@ apiKey="..."
 
 默认模型为 `inworld/inworld-stt-1`，使用 server VAD、100ms mono PCM16 chunk，并发布 interim preview 和 final stable。SDK 负责 Basic 鉴权、`transcribeConfig`、`audioChunk`、`endTurn` 和 `closeStream` 完整生命周期；只有 terms 作为 Inworld `prompts` 发送，通用 prompt 不会变成输出语言指令。
 
+vLLM Realtime STT 使用：
+
+```toml
+[asr]
+enabled=true
+provider="vllmRealtime"
+
+[asr.providers.vllmRealtime]
+endpoint="ws://127.0.0.1:8000/v1/realtime"
+model="mistralai/Voxtral-Mini-4B-Realtime-2602"
+# apiKey="..." # 仅在 vLLM 使用 --api-key 时配置
+```
+
+vLLM adapter 只接受 16kHz mono PCM16。`transcription.delta` 是只追加的已确认前缀，映射 provisional；`transcription.done` 是唯一 stable。协议没有 server VAD，Finish 发送一次 `input_audio_buffer.commit` 且 `final=true`，因此最终 stable 在输入结束时产生。
+
 generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response_format=json`。请求上下文中的 prompt 去除首尾空白后非空时才发送 `prompt`；不会发送 model、language、hotwords 或 language_hints。
 
 ## 应用层完整配置
@@ -106,7 +121,7 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime` 或 `inworldRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
 | `asr.requestTimeout` | duration string | `8s` | 否 | 单次 provider HTTP 请求超时，例如 `"8s"`。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
@@ -227,6 +242,15 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.inworldRealtime.finishTimeout` | duration | 20s | 否 | `endTurn` 后等待尾部 final 的硬上限；final 后 SDK 发送 `closeStream` 并主动关闭。 |
 | `asr.providers.inworldRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
 | `asr.providers.inworldRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
+| `asr.providers.vllmRealtime.endpoint` | string | `ws://127.0.0.1:8000/v1/realtime` | 否 | vLLM Realtime STT WebSocket URL。非 loopback 生产服务应使用 `wss`。 |
+| `asr.providers.vllmRealtime.model` | string | `mistralai/Voxtral-Mini-4B-Realtime-2602` | 否 | `session.update` 中校验的 served model 名称；使用 `--served-model-name` 时需保持一致。 |
+| `asr.providers.vllmRealtime.apiKey` | string | 空 | 否 | vLLM 使用 `--api-key` 时发送为 Bearer header；未启用鉴权时留空。 |
+| `asr.providers.vllmRealtime.audioChunkMs` | duration/ms | 100ms | 否 | 聚合后发送给 vLLM 的 PCM chunk 时长，范围 20ms–1s。 |
+| `asr.providers.vllmRealtime.handshakeTimeout` | duration | 10s | 否 | 等待服务端 `session.created` 的上限。 |
+| `asr.providers.vllmRealtime.writeTimeout` | duration | 5s | 否 | 单次 session/update/commit/audio WebSocket 写入上限。 |
+| `asr.providers.vllmRealtime.finishTimeout` | duration | 20s | 否 | final commit 后等待 `transcription.done` 的硬上限。 |
+| `asr.providers.vllmRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
+| `asr.providers.vllmRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控内网；loopback 默认允许。 |
 
 `duration/ms` 表示应用 loader 同时接受 Go duration 字符串（如 `900ms`、`3s`）或正整数毫秒。`asr.requestTimeout` 应使用 Go duration 字符串。
 
@@ -375,6 +399,14 @@ ElevenLabs adapter 直接连接 `/v1/speech-to-text/realtime`，握手使用 `xi
 Inworld adapter 首包发送 `transcribeConfig`，然后按序发送 base64 `audioChunk`。它接受常见 8kHz–48kHz 单声道 raw PCM16，并向服务端明确声明原始 sample rate，不做无意义的 16kHz 到 16kHz 重采样。网关响应使用 `result.transcription`：interim 作为 preview，final 作为 stable；空 final 会撤回已发布 preview。CloseInput 先发送 `endTurn`，收到尾部 final 后再发送 `closeStream`、设置成功结果并主动关闭连接，不依赖服务端 WebSocket close frame。
 
 默认模型使用 `inworldSttV1Config.vadThreshold=0.5`；`DisableServerVAD` 只适用于 `inworld/inworld-stt-1`，SDK 会发送阈值 0 改用 manual `endTurn`。Inworld `prompts` 的语义是专有名词/关键词偏置，SDK 因此忽略 `RecognitionContext.Prompt`，只发送去重 terms；含有网关明确拒绝的 `#`/`/`/`@`/`|` 或控制字符时会在连接前失败。只有明确设置的 language 会转成 ISO 主语言代码；`auto` 不发送 language，language hints 也不会被升级为单一语言约束。
+
+## `VLLMRealtimeConfig`
+
+vLLM adapter 收到 `session.created` 后发送 `session.update(model)`，然后发送一次不带 `final` 的 `input_audio_buffer.commit` 启动实时生成。`WriteAudio` 严格校验 sequence/sample 连续性，并发送 base64 PCM16 append；`CloseInput` 只发送一次 `final=true` commit。只有收到 `transcription.done` 才成功完成，连接提前关闭、服务端 error 或 finish timeout 都会分类为可通过 `errors.Is` 判断的 SDK sentinel error。
+
+当前 vLLM Realtime STT 协议固定 16kHz、16-bit、单声道 PCM，不支持 language、language hints、prompt、terms 或 server VAD。delta 是 vLLM 生成器的追加式 token，SDK 累计为 provisional；done 的完整文本覆盖并确认为 stable。API key 可选且只进入 `Authorization: Bearer` header；`ws` 默认仅允许 loopback，远端明文连接必须显式开启 `AllowInsecureWebSocket`。
+
+当前 vLLM 的 `Qwen3ASRRealtimeGeneration` 存在上游已知限制（vllm-project/vllm#35767）：内部音频片段可能重复，且 `language ...<asr_text>` 原始模型协议可能直接进入 delta/done。SDK 不做无边界、无 rollback 元数据的启发式去重，避免误删说话者真实重复的文本。生产实时识别应使用 Voxtral；Qwen3-ASR 应暂用带后处理的 HTTP transcription endpoint，待上游提供规范化 delta 或片段元数据后再在 Provider adapter 边界接入。
 
 ## `AlignmentConfig`
 

@@ -16,6 +16,7 @@ const (
 	defaultTailFinalizeResultWait  = 20 * time.Second
 	defaultMaxWindowDuration       = 30 * time.Second
 	tailFinalizationTimeoutMessage = "ASR tail finalization timed out"
+	eventErrorUnauthorized         = "unauthorized"
 )
 
 type SessionConfig struct {
@@ -1170,7 +1171,7 @@ func classifyEventError(err error) string {
 	case errors.Is(err, ErrRateLimited):
 		return "rate_limited"
 	case errors.Is(err, ErrUnauthorized):
-		return "unauthorized"
+		return eventErrorUnauthorized
 	case errors.Is(err, ErrOverloaded):
 		return "overloaded"
 	default:
