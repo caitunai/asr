@@ -1,6 +1,6 @@
 # ASR 配置参考
 
-本文档分别描述 ASR 应用配置和 `github.com/caitunai/asr-sdk-go` SDK 配置。SDK 不依赖 Viper；`services/asr` 和 WebSocket handler 负责把应用配置转换成 SDK 类型。
+本文档分别描述 ASR 应用配置和 `github.com/caitunai/asr` SDK 配置。SDK 不依赖 Viper；`services/asr` 和 WebSocket handler 负责把应用配置转换成 SDK 类型。
 
 ## 应用最小配置
 

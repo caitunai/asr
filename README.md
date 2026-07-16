@@ -1,6 +1,6 @@
 # ASR SDK for Go
 
-`github.com/caitunai/asr-sdk-go` 是一个不依赖 Gin、Viper、输入侧 WebSocket 或具体 VAD 实现的 ASR Go SDK。调用方输入单声道 `float32 PCM`；SDK 负责 PCM16/WAV 编码、供应商调用、相邻双片段窗口、无时间戳 Unicode 对齐、修订事件和尾段确认。
+`github.com/caitunai/asr` 是一个不依赖 Gin、Viper、输入侧 WebSocket 或具体 VAD 实现的 ASR Go SDK。调用方输入单声道 `float32 PCM`；SDK 负责 PCM16/WAV 编码、供应商调用、相邻双片段窗口、无时间戳 Unicode 对齐、修订事件和尾段确认。
 
 SDK 也提供面向连续 PCM 的 `AudioSession`、`SegmentedSession` 和 `RealtimeSession`。输入可以来自 WebSocket、命令行文件或麦克风；VAD 通过绝对 sample index 的通用 `SpeechBoundary` 接入，SDK 不导入具体 audio/VAD package。供应商实时 WebSocket 使用独立 `StreamingProvider`/`ProviderStream` 接口，不经过 HTTP 窗口调度，也不要求本地 VAD。
 

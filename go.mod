@@ -1,4 +1,4 @@
-module github.com/caitunai/asr-sdk-go
+module github.com/caitunai/asr
 
 go 1.26.0
 
