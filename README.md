@@ -4,7 +4,7 @@
 
 SDK 也提供面向连续 PCM 的 `AudioSession`、`SegmentedSession` 和 `RealtimeSession`。输入可以来自 WebSocket、命令行文件或麦克风；VAD 通过绝对 sample index 的通用 `SpeechBoundary` 接入，SDK 不导入具体 audio/VAD package。供应商实时 WebSocket 使用独立 `StreamingProvider`/`ProviderStream` 接口，不经过 HTTP 窗口调度，也不要求本地 VAD。
 
-完整的应用配置、`GenericHTTPConfig`、`ClientConfig`、`SessionConfig`、`AlignmentConfig` 和 scheduler 语义见 [CONFIGURATION.md](CONFIGURATION.md)。
+完整的应用配置、`GenericHTTPConfig`、`MicrosoftHTTPConfig`、`ClientConfig`、`SessionConfig`、`AlignmentConfig` 和 scheduler 语义见 [CONFIGURATION.md](CONFIGURATION.md)。
 
 ## 通用 HTTP Provider
 
@@ -47,6 +47,30 @@ recognizer, err := asr.NewClient(provider, asr.ClientConfig{
     AudioFormat:    asr.AudioFormatWAVPCM16,
 })
 ```
+
+## Microsoft Speech HTTP Provider
+
+`MicrosoftHTTPProvider` 实现 Microsoft Speech REST Conversation API。它属于分段 HTTP provider：调用方仍把连续 PCM 和 VAD boundary 交给 `SegmentedSession`，SDK 对短静音预览、正式 VAD 片段及相邻双窗口编码 WAV 后请求 Microsoft。它不是 Microsoft WebSocket streaming adapter，因此不会绕过本地 VAD 或相邻窗口确认。
+
+```go
+provider, err := asr.NewMicrosoftHTTPProvider(asr.MicrosoftHTTPConfig{
+    Endpoint:        "https://eastus.stt.speech.microsoft.com",
+    APIKey:          os.Getenv("MICROSOFT_SPEECH_API_KEY"),
+    DefaultLanguage: "en-US",
+})
+if err != nil {
+    return err
+}
+
+recognizer, err := asr.NewClient(provider, asr.ClientConfig{
+    RequestTimeout: 20 * time.Second,
+    RetryCount:     1,
+    MaxConcurrency: 16,
+    AudioFormat:    asr.AudioFormatWAVPCM16,
+})
+```
+
+`Endpoint` 可以是区域根地址、Azure resource 根地址，也可以是完整的 conversation recognition 地址；SDK 会分别补齐 `/speech/...` 或 `/stt/speech/...` 路径。订阅密钥使用 `Ocp-Apim-Subscription-Key`，带 `Bearer ` 前缀或显式 `AuthMode: "bearer"` 的 token 使用 Authorization。每次请求发送 `format=detailed` 和 Microsoft locale；会话语言是 `auto` 时采用 `DefaultLanguage`，默认 `en-US`。返回的 `DisplayText` 优先成为文本，`NBest` 用作回退并提供可选 word times。Microsoft short-audio REST 只接受 16kHz mono PCM WAV、单请求最多 60 秒且只返回 final；应用集成默认把最大 window 设为 55 秒。该 REST 协议没有 prompt、terms、language hints 或自动语言检测能力。
 
 ## Qwen Realtime Provider
 

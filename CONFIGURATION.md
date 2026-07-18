@@ -15,6 +15,21 @@ path="/v1/audio/transcriptions"
 apiKey="..."
 ```
 
+Microsoft Speech REST 模式使用：
+
+```toml
+[asr]
+enabled=true
+provider="microsoft"
+
+[asr.providers.microsoft]
+endpoint="https://eastus.stt.speech.microsoft.com"
+apiKey="..."
+defaultLanguage="en-US"
+```
+
+Microsoft 模式继续使用本地 VAD、HTTP window 和相邻片段确认。区域根地址会自动补齐 conversation recognition path；`auto` 会话语言使用 `defaultLanguage`，而不是把无效的 `auto` locale 发送给服务端。
+
 Qwen 实时模式使用：
 
 ```toml
@@ -121,9 +136,9 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | `generic`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`microsoft`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
-| `asr.requestTimeout` | duration string | `8s` | 否 | 单次 provider HTTP 请求超时，例如 `"8s"`。 |
+| `asr.requestTimeout` | duration string | generic `8s`；microsoft `20s` | 否 | 单次 provider HTTP 请求超时。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
 | `asr.maxConcurrency` | int | 16 | 否 | 全局 ASR client 并发上限；单会话 scheduler 仍保持一个 active。 |
 | `asr.contextSilenceMs` | duration/ms | 200ms | 否 | 拼接两个有间隔 VAD segment 时插入的静音。时间连续时不插入。 |
@@ -133,12 +148,19 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.shortSegmentNeighborWaitMs` | duration/ms | 3s | 否 | 短片段从 EndAt 起等待下一次 SpeechStarted 的最长时间。不得短于 tail finalize silence。 |
 | `asr.longSpeechCommitAfterMs` | duration/ms | 15s | 否 | 当前未正式提交的连续语音达到该时长后，允许把历史短静音边界升级为正式 Segment。 |
 | `asr.longSpeechCommitPrefixMs` | duration/ms | 5s | 否 | 在当前未提交起点后的该前缀区间内选择最后一个短静音作为正式 end，并从同一点重新 start。必须小于 commit after。 |
-| `asr.maxWindowMs` | duration/ms | 65s | 否 | 单个 standalone/pair ASR 音频窗口的最大时长。 |
+| `asr.maxWindowMs` | duration/ms | generic `65s`；microsoft `55s` | 否 | 单个 standalone/pair ASR 音频窗口的最大时长。Microsoft short-audio REST 硬上限为 60 秒。 |
 | `asr.stopTimeoutMs` | duration/ms | 23s | 否 | WebSocket stop 等待 ASR completed 的最小时间；会按正式任务数量自动扩展。 |
 | `asr.tailAnchorEnabled` | bool | true | 否 | 尾段缺少下一窗口时是否提交同 provider 的 standalone anchor。 |
 | `asr.providers.generic.baseURL` | string | 无 | generic 启用时必填 | HTTP 服务根地址。远程必须 HTTPS；localhost/loopback 可用 HTTP。 |
 | `asr.providers.generic.path` | string | 无 | generic 启用时必填 | 转写接口路径，例如 `/v1/audio/transcriptions`。 |
 | `asr.providers.generic.apiKey` | string | 无 | generic 启用时必填 | Bearer API key。应通过环境变量或私密配置注入，不能进入日志或前端。 |
+| `asr.providers.microsoft.endpoint` | string | 无 | microsoft 启用时必填 | Microsoft Speech 区域根地址或完整 conversation recognition URL。`wss/ws` 会对应转换成 `https/http`；远程生产地址必须为 HTTPS。 |
+| `asr.providers.microsoft.apiKey` | string | 无 | microsoft 启用时必填 | Speech subscription key 或 Bearer token，只进入供应商鉴权 header。 |
+| `asr.providers.microsoft.model` | string | `speech-recognition-conversation` | 否 | 结果元数据中的稳定模型标识，不作为 REST query 发送。 |
+| `asr.providers.microsoft.authMode` | string | `auto` | 否 | `auto`、`subscription_key` 或 `bearer`。auto 根据 Bearer 前缀/JWT 形态选择鉴权 header。 |
+| `asr.providers.microsoft.defaultLanguage` | string | `en-US` | 否 | 会话语言为 `auto` 时实际发送的 Microsoft locale。 |
+| `asr.providers.microsoft.responseBodyLimit` | int | 2 MiB | 否 | 单次 JSON 响应体字节上限。 |
+| `asr.providers.microsoft.allowInsecureHTTP` | bool | false | 否 | 允许非 loopback 明文 HTTP，仅限受控开发网络。 |
 | `asr.providers.qwenRealtime.endpoint` | string | 无 | qwenRealtime 启用时必填 | 供应商实时 WebSocket URL；远程地址必须使用 `wss`。model query 由 adapter 写入。 |
 | `asr.providers.qwenRealtime.apiKey` | string | 无 | qwenRealtime 启用时必填 | 百炼 API key，只用于供应商侧 Authorization header。 |
 | `asr.providers.qwenRealtime.model` | string | `qwen3-asr-flash-realtime` | 否 | 实时模型名称。 |
@@ -301,6 +323,21 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `AudioFormat` | `wav_pcm_s16le` | 请求音频格式，可选 `wav_pcm_s16le`、`raw_pcm_s16le`。 |
 
 响应 JSON 至少需要 `text`。可选 `language`、`words` 或 `segments`；时间项使用 `word`/`text`、`start`、`end`、`confidence`。
+
+## `MicrosoftHTTPConfig`
+
+| 字段 | 默认值 | 作用 |
+|---|---:|---|
+| `Name` | `microsoft` | Provider 稳定名称。 |
+| `Model` | `speech-recognition-conversation` | 结果元数据模型名，不发送给 Microsoft。 |
+| `Endpoint` | 无 | 区域根地址、Azure resource 根地址或完整 REST conversation recognition URL，必填；SDK 自动补齐对应路径。 |
+| `APIKey` | 无 | subscription key 或 Bearer token，必填。 |
+| `AuthMode` | `auto` | `auto`、`subscription_key`、`bearer`。 |
+| `DefaultLanguage` | `en-US` | 请求 language 为 `auto` 时使用的 locale。 |
+| `ResponseBodyLimit` | 2 MiB | 响应体大小上限。 |
+| `AllowInsecureHTTP` | false | 允许非 loopback HTTP；生产环境应保持 false。 |
+
+Provider 只接受 16kHz mono WAV PCM16，并拒绝超过 60 秒的 payload。请求使用实际采样率构造 `Content-Type`，发送 `format=detailed` 和规范化 locale。`DisplayText` 优先，随后回退到第一个 `NBest.Display` 或 `NBest.Lexical`；Microsoft 100ns tick word timestamps 会转换成秒。`NoMatch`、initial silence、babble timeout 和 end-of-dictation 空结果统一分类为 `ErrNoSpeech`。该 provider 不发送 `RecognitionContext` 中的 prompt、terms、extra fields 或 language hints。
 
 ## `ClientConfig`
 
