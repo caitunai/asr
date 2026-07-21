@@ -4,6 +4,10 @@
 
 SDK 也提供面向连续 PCM 的 `AudioSession`、`SegmentedSession` 和 `RealtimeSession`。输入可以来自 WebSocket、命令行文件或麦克风；VAD 通过绝对 sample index 的通用 `SpeechBoundary` 接入，SDK 不导入具体 audio/VAD package。供应商实时 WebSocket 使用独立 `StreamingProvider`/`ProviderStream` 接口，不经过 HTTP 窗口调度，也不要求本地 VAD。
 
+需要在同一应用中按输入会话选择多个后端时，可实现 `AudioSessionFactoryCatalog`。`Providers` 只返回 Provider 名称和 `segmented_http`/`realtime_websocket` 模式，不应包含 endpoint 或 credential；`Resolve` 在会话开始时返回固定 factory，同一会话内不应按 Segment 改换供应商。
+
+HTTP 分段会话支持两种策略：默认 `contextual` 会使用短静音 preview、相邻双 Segment window、对齐和 tail fallback 来提高准确率；`single_segment` 只在正式 VAD END 或超长语音安全边界形成 Segment 后提交一个 standalone 识别任务，并直接发布 stable，不产生短静音请求、不等待邻段，也不执行 tail-anchor/fallback。后者适用于按请求计费或并发额度较低的服务。`ClientConfig.RetryCount` 仍独立生效；要求一次逻辑任务严格只产生一次 HTTP 尝试时应设为 `0`。
+
 完整的应用配置、`GenericHTTPConfig`、`MicrosoftHTTPConfig`、`ClientConfig`、`SessionConfig`、`AlignmentConfig` 和 scheduler 语义见 [CONFIGURATION.md](CONFIGURATION.md)。
 
 ## 通用 HTTP Provider

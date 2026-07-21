@@ -7,9 +7,16 @@ import (
 
 type AudioFormat string
 
+type SegmentRecognitionStrategy string
+
 const (
 	AudioFormatWAVPCM16 AudioFormat = "wav_pcm_s16le"
 	AudioFormatRawPCM16 AudioFormat = "raw_pcm_s16le"
+)
+
+const (
+	SegmentRecognitionStrategyContextual SegmentRecognitionStrategy = "contextual"
+	SegmentRecognitionStrategySingle     SegmentRecognitionStrategy = "single_segment"
 )
 
 type TranscriptState string

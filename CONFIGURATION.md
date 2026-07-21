@@ -8,6 +8,8 @@
 [asr]
 enabled=true
 provider="generic"
+# 可选：低成本单段模式；默认 contextual
+# segmentStrategy="single_segment"
 
 [asr.providers.generic]
 baseURL="https://asr.example.com"
@@ -137,6 +139,7 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
 | `asr.provider` | string | `generic` | 否 | `generic`、`microsoft`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.segmentStrategy` | string | `contextual` | 否 | HTTP 分段 provider 的识别策略。`contextual` 使用短静音 preview、邻接双窗口和对齐；`single_segment` 对每个正式 VAD/超长语音安全 Segment 只创建一个识别任务并直接 stable。实时 provider 忽略该项。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
 | `asr.requestTimeout` | duration string | generic `8s`；microsoft `20s` | 否 | 单次 provider HTTP 请求超时。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
@@ -353,6 +356,7 @@ Provider 只接受 16kHz mono WAV PCM16，并拒绝超过 60 秒的 payload。�
 | 字段 | SDK 默认值 | 应用默认值 | 作用 |
 |---|---:|---:|---|
 | `SessionID` | 无 | 自动生成 | 会话唯一 ID，SDK 调用时必填。 |
+| `SegmentStrategy` | `contextual` | `asr.segmentStrategy` | `contextual` 或 `single_segment`。single 模式禁用短边界识别和邻接窗口，只保留单段正式任务；底层 HTTP 尝试次数仍由 `RetryCount` 控制。 |
 | `Language` | `auto` | `auto` | BCP 47 tag 或自动检测。 |
 | `LanguageHints` | 空 | 会话输入 | 候选 BCP 47 tag，自动去重，不允许 `auto`。 |
 | `Context` | 空 | 会话输入 | `RecognitionContext`，包含 prompt、terms、extra fields。 |

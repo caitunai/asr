@@ -75,6 +75,100 @@ func TestSegmentedSessionUsesSoftBoundaryForPreviewAndEndForFinal(t *testing.T) 
 	}
 }
 
+func TestSegmentedSessionSingleStrategyRecognizesEachCompletedSegmentOnce(t *testing.T) {
+	const sampleRate = 1_000
+	recognizer := &segmentedRecordingRecognizer{requests: make(chan TranscriptionRequest, 4)}
+	session, err := NewSegmentedSession(context.Background(), recognizer, SegmentedSessionConfig{
+		Session: SessionConfig{
+			SessionID:           "single-segment-session",
+			SegmentStrategy:     SegmentRecognitionStrategySingle,
+			SampleRate:          sampleRate,
+			Channels:            1,
+			MaxWindowDuration:   10 * time.Second,
+			TailAnchorEnabled:   true,
+			TailFinalizeSilence: time.Second,
+		},
+		MaxBufferedSamples:     10_000,
+		IdlePreRollSamples:     100,
+		LongSpeechCommitAfter:  8 * time.Second,
+		LongSpeechCommitPrefix: 6 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new single-segment session: %v", err)
+	}
+	t.Cleanup(session.Close)
+
+	ctx := context.Background()
+	if err := session.Push(ctx, AudioChunk{
+		Samples: make([]float32, 1_500),
+		Boundaries: []SpeechBoundary{
+			{Type: SpeechBoundaryStart, SourceSegmentIndex: 0, StartSample: 0},
+			{Type: SpeechBoundarySoft, SourceSegmentIndex: 0, StartSample: 0, EndSample: 500},
+		},
+	}); err != nil {
+		t.Fatalf("push first speech and soft boundary: %v", err)
+	}
+	select {
+	case request := <-recognizer.requests:
+		t.Fatalf("single strategy submitted soft-boundary request: %+v", request)
+	default:
+	}
+	if session.previewSequence.Load() != 0 {
+		t.Fatalf("preview sequence = %d, want 0", session.previewSequence.Load())
+	}
+	if err := session.Push(ctx, AudioChunk{Boundaries: []SpeechBoundary{{
+		Type: SpeechBoundaryEnd, SourceSegmentIndex: 0, StartSample: 0, EndSample: 1_000,
+	}}}); err != nil {
+		t.Fatalf("finish first speech: %v", err)
+	}
+	firstRequest := receiveSegmentedRequest(t, recognizer.requests)
+	if firstRequest.RequestID != "single-segment-session:segment:0" || !firstRequest.Authoritative ||
+		len(firstRequest.Samples) != 1_000 {
+		t.Fatalf("first request = %+v samples=%d", firstRequest, len(firstRequest.Samples))
+	}
+	firstResult := waitForFinalSegment(t, session.Events(), time.Second)
+	if firstResult.SegmentIndex != 0 || firstResult.State != TranscriptStateStable ||
+		firstResult.FinalizationReason != FinalizationProviderFinal ||
+		firstResult.EvidenceQuality != EvidenceProviderFinal {
+		t.Fatalf("first result = %+v", firstResult)
+	}
+
+	if err := session.Push(ctx, AudioChunk{
+		Samples: make([]float32, 1_000),
+		Boundaries: []SpeechBoundary{
+			{Type: SpeechBoundaryStart, SourceSegmentIndex: 1, StartSample: 1_500},
+			{Type: SpeechBoundarySoft, SourceSegmentIndex: 1, StartSample: 1_500, EndSample: 1_800},
+			{Type: SpeechBoundaryEnd, SourceSegmentIndex: 1, StartSample: 1_500, EndSample: 2_500},
+		},
+	}); err != nil {
+		t.Fatalf("push second speech: %v", err)
+	}
+	secondRequest := receiveSegmentedRequest(t, recognizer.requests)
+	if secondRequest.RequestID != "single-segment-session:segment:1" || !secondRequest.Authoritative ||
+		len(secondRequest.Samples) != 1_000 {
+		t.Fatalf("second request = %+v samples=%d", secondRequest, len(secondRequest.Samples))
+	}
+	secondResult := waitForFinalSegment(t, session.Events(), time.Second)
+	if secondResult.SegmentIndex != 1 || secondResult.State != TranscriptStateStable ||
+		secondResult.Revision != 1 {
+		t.Fatalf("second result = %+v", secondResult)
+	}
+	select {
+	case request := <-recognizer.requests:
+		t.Fatalf("unexpected additional request: %+v", request)
+	default:
+	}
+
+	if err := session.Finish(ctx, FinalAudioChunk{}); err != nil {
+		t.Fatalf("finish session: %v", err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := session.Wait(waitCtx); err != nil {
+		t.Fatalf("wait session: %v", err)
+	}
+}
+
 func TestSegmentedSessionCommitsAgedSoftBoundaryDuringLongSpeech(t *testing.T) {
 	const sampleRate = 1_000
 	recognizer := &segmentedRecordingRecognizer{requests: make(chan TranscriptionRequest, 8)}
@@ -175,6 +269,58 @@ func TestSegmentedSessionCommitsAgedSoftBoundaryDuringLongSpeech(t *testing.T) {
 	}
 }
 
+func TestSegmentedSessionSingleStrategyPromotesLongSpeechWithoutPreview(t *testing.T) {
+	const sampleRate = 1_000
+	recognizer := &segmentedRecordingRecognizer{requests: make(chan TranscriptionRequest, 2)}
+	session, err := NewSegmentedSession(context.Background(), recognizer, SegmentedSessionConfig{
+		Session: SessionConfig{
+			SessionID:         "single-long-speech-session",
+			SegmentStrategy:   SegmentRecognitionStrategySingle,
+			SampleRate:        sampleRate,
+			Channels:          1,
+			MaxWindowDuration: 12 * time.Second,
+		},
+		MaxBufferedSamples:     20_000,
+		IdlePreRollSamples:     100,
+		LongSpeechCommitAfter:  10 * time.Second,
+		LongSpeechCommitPrefix: 6 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new single long-speech session: %v", err)
+	}
+	t.Cleanup(session.Close)
+
+	ctx := context.Background()
+	if err := session.Push(ctx, AudioChunk{
+		Samples: make([]float32, 6_000),
+		Boundaries: []SpeechBoundary{
+			{Type: SpeechBoundaryStart, SourceSegmentIndex: 0, StartSample: 0},
+			{Type: SpeechBoundarySoft, SourceSegmentIndex: 0, StartSample: 0, EndSample: 5_000},
+		},
+	}); err != nil {
+		t.Fatalf("push initial speech: %v", err)
+	}
+	select {
+	case request := <-recognizer.requests:
+		t.Fatalf("soft boundary submitted request before safety threshold: %+v", request)
+	default:
+	}
+	if err := session.Push(ctx, AudioChunk{Samples: make([]float32, 4_000)}); err != nil {
+		t.Fatalf("advance safety threshold: %v", err)
+	}
+	request := receiveSegmentedRequest(t, recognizer.requests)
+	if request.RequestID != "single-long-speech-session:segment:0" || len(request.Samples) != 5_000 ||
+		!request.Authoritative {
+		t.Fatalf("safety request = %+v samples=%d", request, len(request.Samples))
+	}
+	result := waitForFinalSegment(t, session.Events(), time.Second)
+	if result.State != TranscriptStateStable || result.FinalizationReason != FinalizationProviderFinal ||
+		session.activeSpeech == nil || session.activeSpeech.startSample != 5_000 ||
+		session.previewSequence.Load() != 0 {
+		t.Fatalf("safety result/state = %+v active=%+v previews=%d", result, session.activeSpeech, session.previewSequence.Load())
+	}
+}
+
 func TestSegmentedSessionRejectsInvalidLongSpeechCommitWindow(t *testing.T) {
 	_, err := NewSegmentedSession(context.Background(), &segmentedRecordingRecognizer{
 		requests: make(chan TranscriptionRequest, 1),
@@ -185,6 +331,22 @@ func TestSegmentedSessionRejectsInvalidLongSpeechCommitWindow(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("invalid commit window error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestSegmentedSessionRejectsInvalidSegmentStrategy(t *testing.T) {
+	_, err := NewSegmentedSession(context.Background(), &segmentedRecordingRecognizer{
+		requests: make(chan TranscriptionRequest, 1),
+	}, SegmentedSessionConfig{
+		Session: SessionConfig{
+			SessionID:       "invalid-segment-strategy",
+			SegmentStrategy: "unsupported",
+			SampleRate:      1_000,
+			Channels:        1,
+		},
+	})
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("invalid segment strategy error = %v, want ErrInvalidConfig", err)
 	}
 }
 

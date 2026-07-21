@@ -21,6 +21,7 @@ const (
 
 type SessionConfig struct {
 	SessionID                string
+	SegmentStrategy          SegmentRecognitionStrategy
 	Language                 string
 	LanguageHints            []string
 	Context                  RecognitionContext
@@ -86,6 +87,7 @@ const (
 	windowKindRegular    windowKind = "regular"
 	windowKindTailAnchor windowKind = "tail_anchor"
 	windowKindFallback   windowKind = "segment_fallback"
+	windowKindDirect     windowKind = "segment_direct"
 )
 
 type windowTask struct {
@@ -331,6 +333,9 @@ func (a *sessionActor) addSegment(segment Segment) error {
 	if a.hasSegment && segment.Index <= a.lastSegmentIndex {
 		return ErrSegmentInvalid
 	}
+	if a.session.cfg.SegmentStrategy == SegmentRecognitionStrategySingle {
+		return a.addDirectSegment(segment)
+	}
 	if a.current == nil || a.current.sealed {
 		a.current = a.newChain()
 	}
@@ -363,7 +368,30 @@ func (a *sessionActor) addSegment(segment Segment) error {
 	return nil
 }
 
+func (a *sessionActor) addDirectSegment(segment Segment) error {
+	if windowDuration([]Segment{segment}, 0) > a.session.cfg.MaxWindowDuration {
+		return errors.Join(ErrSegmentInvalid, ErrWindowTooLong)
+	}
+	chain := a.newChain()
+	chain.segments = append(chain.segments, cloneSegment(segment))
+	a.lastSegmentIndex = segment.Index
+	a.hasSegment = true
+	a.nextWindowIndex++
+	a.submit(windowTask{
+		chainID:     chain.id,
+		localIndex:  1,
+		globalIndex: a.nextWindowIndex,
+		requestID:   a.session.cfg.SessionID + ":segment:" + strconv.Itoa(segment.Index),
+		kind:        windowKindDirect,
+		segments:    []Segment{cloneSegment(segment)},
+	})
+	return nil
+}
+
 func (a *sessionActor) speechStarted() {
+	if a.session.cfg.SegmentStrategy == SegmentRecognitionStrategySingle {
+		return
+	}
 	if a.current == nil || a.current.sealed {
 		return
 	}
@@ -386,6 +414,9 @@ func (a *sessionActor) speechStarted() {
 }
 
 func (a *sessionActor) speechSplit() {
+	if a.session.cfg.SegmentStrategy == SegmentRecognitionStrategySingle {
+		return
+	}
 	if a.current == nil || a.current.sealed {
 		return
 	}
@@ -399,6 +430,9 @@ func (a *sessionActor) speechSplit() {
 }
 
 func (a *sessionActor) speechEnded(streamDuration float64) {
+	if a.session.cfg.SegmentStrategy == SegmentRecognitionStrategySingle {
+		return
+	}
 	if a.current == nil || a.current.sealed || len(a.current.segments) == 0 {
 		return
 	}
@@ -412,6 +446,10 @@ func (a *sessionActor) stop() error {
 		return nil
 	}
 	a.stopping = true
+	if a.session.cfg.SegmentStrategy == SegmentRecognitionStrategySingle {
+		a.maybeComplete()
+		return nil
+	}
 	for _, chain := range a.chains {
 		if chain.sealed || len(chain.segments) == 0 {
 			continue
@@ -475,6 +513,10 @@ func (a *sessionActor) handleWindowCompletion(completion windowCompletion) {
 		return
 	}
 	chain.pendingTasks = max(0, chain.pendingTasks-1)
+	if completion.task.kind == windowKindDirect {
+		a.handleDirectCompletion(chain, completion)
+		return
+	}
 	if completion.err != nil {
 		if errors.Is(completion.err, ErrRequestSuperseded) {
 			a.handleFailedTailTask(chain)
@@ -532,6 +574,58 @@ func (a *sessionActor) handleWindowCompletion(completion windowCompletion) {
 	if chain.tailRequested {
 		a.tryFinalizeTail(chain)
 	}
+}
+
+func (a *sessionActor) handleDirectCompletion(chain *chainState, completion windowCompletion) {
+	if chain == nil || len(completion.task.segments) != 1 {
+		return
+	}
+	segment := completion.task.segments[0]
+	if completion.err != nil {
+		a.emit(Event{
+			Type: EventRecognitionError,
+			Error: &EventError{
+				Code:         classifyEventError(completion.err),
+				Message:      "ASR segment request failed",
+				RequestID:    completion.task.requestID,
+				SegmentIndex: segment.Index,
+				Final:        true,
+			},
+		})
+		a.sealChain(chain)
+		return
+	}
+	text := strings.TrimSpace(completion.result.Text)
+	if text == "" {
+		a.emit(Event{
+			Type: EventRecognitionError,
+			Error: &EventError{
+				Code:         "no_speech",
+				Message:      "ASR segment contained no speech",
+				RequestID:    completion.task.requestID,
+				SegmentIndex: segment.Index,
+				Final:        true,
+			},
+		})
+		a.sealChain(chain)
+		return
+	}
+	result := SegmentResult{
+		SegmentIndex:       segment.Index,
+		SourceWindowIndex:  completion.task.globalIndex,
+		Revision:           1,
+		State:              TranscriptStateStable,
+		Text:               text,
+		FinalizationReason: FinalizationProviderFinal,
+		EvidenceQuality:    EvidenceProviderFinal,
+	}
+	a.emit(Event{
+		Type:     EventSegmentResult,
+		Provider: completion.result.Provider,
+		Model:    completion.result.Model,
+		Segment:  &result,
+	})
+	a.sealChain(chain)
 }
 
 func (a *sessionActor) handleFailedTailTask(chain *chainState) {
@@ -1065,6 +1159,13 @@ func normalizeSessionConfig(cfg SessionConfig) (SessionConfig, error) {
 	}
 	cfg.Language = languageTag
 	cfg.LanguageHints = languageHints
+	if cfg.SegmentStrategy == "" {
+		cfg.SegmentStrategy = SegmentRecognitionStrategyContextual
+	}
+	if cfg.SegmentStrategy != SegmentRecognitionStrategyContextual &&
+		cfg.SegmentStrategy != SegmentRecognitionStrategySingle {
+		return cfg, ErrInvalidConfig
+	}
 	if cfg.EventBuffer <= 0 {
 		cfg.EventBuffer = defaultSessionEventBuffer
 	}

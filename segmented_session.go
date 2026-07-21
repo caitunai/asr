@@ -34,7 +34,8 @@ type SegmentedSessionConfig struct {
 }
 
 // SegmentedSession turns a continuous PCM stream plus transport-neutral speech
-// boundaries into preview requests and authoritative rolling ASR windows.
+// boundaries into either contextual rolling windows or direct single-segment
+// requests, according to Session.SegmentStrategy.
 // Push and Finish are serialized because audio chunks are an ordered stream.
 type SegmentedSession struct {
 	core      *Session
@@ -357,7 +358,9 @@ func (s *SegmentedSession) recordSoftBoundary(boundary SpeechBoundary) {
 		return
 	}
 	s.activeSpeech.softBoundaries = append(s.activeSpeech.softBoundaries, boundary.EndSample)
-	s.submitIntermediate(boundary)
+	if s.cfg.Session.SegmentStrategy == SegmentRecognitionStrategyContextual {
+		s.submitIntermediate(boundary)
+	}
 }
 
 func (s *SegmentedSession) commitAgedSoftBoundaries(ctx context.Context) error {
@@ -483,6 +486,13 @@ func (s *SegmentedSession) isCompletedSource(sourceIndex int) bool {
 
 func normalizeSegmentedSessionConfig(cfg SegmentedSessionConfig) (SegmentedSessionConfig, error) {
 	if cfg.Session.SampleRate <= 0 || cfg.Session.Channels != 1 {
+		return cfg, ErrInvalidConfig
+	}
+	if cfg.Session.SegmentStrategy == "" {
+		cfg.Session.SegmentStrategy = SegmentRecognitionStrategyContextual
+	}
+	if cfg.Session.SegmentStrategy != SegmentRecognitionStrategyContextual &&
+		cfg.Session.SegmentStrategy != SegmentRecognitionStrategySingle {
 		return cfg, ErrInvalidConfig
 	}
 	if cfg.Session.SessionID == "" {

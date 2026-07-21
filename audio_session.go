@@ -66,6 +66,22 @@ type AudioSessionFactory interface {
 	NewAudioSession(ctx context.Context, request AudioSessionRequest) (AudioSession, error)
 }
 
+// AudioSessionProvider describes a server-configured factory that callers may
+// select by name. It intentionally contains no endpoint or credential data.
+type AudioSessionProvider struct {
+	Name string           `json:"name"`
+	Mode AudioSessionMode `json:"mode"`
+}
+
+// AudioSessionFactoryCatalog resolves a provider and segmented recognition
+// strategy for one input session. Applications can expose Providers safely to
+// clients because the descriptors contain names and modes only.
+type AudioSessionFactoryCatalog interface {
+	DefaultProvider() string
+	Providers() []AudioSessionProvider
+	Resolve(provider string, strategy SegmentRecognitionStrategy) (AudioSessionFactory, error)
+}
+
 // AudioSession is transport-neutral. PCM may come from a WebSocket, a file, a
 // microphone, or any other source.
 type AudioSession interface {
