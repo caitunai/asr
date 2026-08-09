@@ -48,6 +48,21 @@ audioChunkMs=100
 
 Qwen server VAD 由 SDK 默认启用，默认阈值 `0.0`、静音确认 `400ms`，因此最小应用配置不需要写 VAD 项。下表中的 VAD key 仍可按需覆盖。
 
+Qwen-Audio-3.0-ASR-Flash-Streaming 使用独立的 DashScope inference 协议：
+
+```toml
+[asr]
+enabled=true
+provider="qwenInferenceRealtime"
+
+[asr.providers.qwenInferenceRealtime]
+endpoint="wss://WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
+# apiKey/workspaceID 未设置时继承 qwenRealtime。
+model="qwen-audio-3.0-asr-flash-streaming"
+```
+
+它不会给 endpoint 添加 model query。应用的 16kHz mono PCM16 以 WebSocket binary frame 直接发送；`Prompt` 映射 run-task context，`Terms` 映射即时热词。
+
 Qwen Omni 实时模式可以复用上述 endpoint、API key 和 workspace：
 
 ```toml
@@ -138,7 +153,7 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | `generic`、`microsoft`、`qwenRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`microsoft`、`qwenRealtime`、`qwenInferenceRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.segmentStrategy` | string | `contextual` | 否 | HTTP 分段 provider 的识别策略。`contextual` 使用短静音 preview、邻接双窗口和对齐；`single_segment` 对每个正式 VAD/超长语音安全 Segment 只创建一个识别任务并直接 stable。实时 provider 忽略该项。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
 | `asr.requestTimeout` | duration string | generic `8s`；microsoft `20s` | 否 | 单次 provider HTTP 请求超时。 |
@@ -177,6 +192,25 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.qwenRealtime.finishTimeout` | duration | 20s | 否 | 发送 `session.finish` 后等待 `session.finished` 的上限。 |
 | `asr.providers.qwenRealtime.eventBuffer` | int | 128 | 否 | Provider 和统一 session 的事件缓冲。 |
 | `asr.providers.qwenRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅限受控开发环境。生产必须用 `wss`。 |
+| `asr.providers.qwenInferenceRealtime.endpoint` | string | 无 | qwenInferenceRealtime 启用时必填 | 固定 `/api-ws/v1/inference` WebSocket URL；不允许 query，远程必须为 `wss`。 |
+| `asr.providers.qwenInferenceRealtime.apiKey` | string | 继承 qwenRealtime | 无法继承时必填 | 百炼 API key，只进入 Bearer Authorization header。 |
+| `asr.providers.qwenInferenceRealtime.model` | string | `qwen-audio-3.0-asr-flash-streaming` | 否 | `run-task.payload.model`。同一协议也可配置受支持的 Fun-ASR-Realtime 模型。 |
+| `asr.providers.qwenInferenceRealtime.workspaceID` | string | 继承 qwenRealtime | 否 | 可选 `X-DashScope-WorkSpace` header。 |
+| `asr.providers.qwenInferenceRealtime.userAgent` | string | 空 | 否 | 可选客户端标识，经校验后写入 `User-Agent` header。 |
+| `asr.providers.qwenInferenceRealtime.vocabularyID` | string | 空 | 否 | 预编译热词列表 ID；存在会话 Terms 时即时 vocabulary 优先生效。 |
+| `asr.providers.qwenInferenceRealtime.vocabularyWeight` | int | 5 | 否 | 会话 Terms 的即时热词权重，支持 1–5 或 50；权重 50 时最多发送 50 个。 |
+| `asr.providers.qwenInferenceRealtime.semanticPunctuationEnabled` | bool | false | 否 | true 使用语义断句，false 使用供应商 VAD 断句。 |
+| `asr.providers.qwenInferenceRealtime.maxSentenceSilenceMs` | duration/ms | 1300ms | 否 | VAD 句尾静音，范围 200ms–6s。 |
+| `asr.providers.qwenInferenceRealtime.multiThresholdModeEnabled` | bool | false | 否 | VAD 模式下启用多阈值，避免单句过长。语义断句时不生效。 |
+| `asr.providers.qwenInferenceRealtime.heartbeat` | bool | false | 否 | 持续静音时启用供应商心跳；心跳结果不会发布为文本。 |
+| `asr.providers.qwenInferenceRealtime.speechNoiseThreshold` | float | 供应商默认 | 否 | 语音/噪声阈值，范围 -1–1。 |
+| `asr.providers.qwenInferenceRealtime.specialWordFilter` | string | 空 | 否 | 原样传入供应商敏感词过滤配置。 |
+| `asr.providers.qwenInferenceRealtime.audioChunkMs` | duration/ms | 100ms | 否 | 聚合后以 binary frame 发送的 PCM chunk 时长。 |
+| `asr.providers.qwenInferenceRealtime.handshakeTimeout` | duration | 10s | 否 | 等待 `task-started` 的上限。 |
+| `asr.providers.qwenInferenceRealtime.writeTimeout` | duration | 5s | 否 | run/finish task 和 binary audio 单次写入上限。 |
+| `asr.providers.qwenInferenceRealtime.finishTimeout` | duration | 20s | 否 | `finish-task` 后等待 `task-finished` 的上限。 |
+| `asr.providers.qwenInferenceRealtime.eventBuffer` | int | 128 | 否 | Provider 与统一 session 的事件缓冲。 |
+| `asr.providers.qwenInferenceRealtime.allowInsecureWebSocket` | bool | false | 否 | 允许非 loopback `ws`，仅用于受控测试。 |
 | `asr.providers.qwenOmniRealtime.endpoint` | string | 继承 qwenRealtime | Omni 启用且无法继承时必填 | Omni 实时 WebSocket URL。 |
 | `asr.providers.qwenOmniRealtime.apiKey` | string | 继承 qwenRealtime | Omni 启用且无法继承时必填 | 百炼 API key。 |
 | `asr.providers.qwenOmniRealtime.workspaceID` | string | 继承 qwenRealtime | 否 | 可选 workspace header。 |
@@ -404,6 +438,14 @@ Provider 只接受 16kHz mono WAV PCM16，并拒绝超过 60 秒的 payload。�
 Qwen adapter 使用 `StreamingRequest` 和 `StreamingCapabilities`。`Endpoint`、`APIKey`、`Model`、server VAD、握手/写入/结束超时属于 adapter 配置，不与 HTTP `ClientConfig` 或 `SegmentedSessionConfig` 混用。`RealtimeSession` 串行写入每个 PCM chunk；前一次写入未完成时后续 `Push` 会背压，绝不覆盖或跳过音频。
 
 实时会话只支持单声道 raw PCM16，Qwen adapter 接受 8kHz 或 16kHz。`RecognitionContext.Prompt` 和去重后的 `Terms` 按行组成 `input_audio_transcription.corpus.text`；语言不是 `auto` 时发送 `language`，否则可取第一个 language hint。partial 的已确认 `text` 与可变 `stash` 原样拼接，最终 `transcript` 产生 `provider_final` stable 结果。
+
+## `DashScopeInferenceRealtimeConfig`
+
+DashScope Inference adapter 实现 `/api-ws/v1/inference` 的 `run-task` 协议，默认模型为 `qwen-audio-3.0-asr-flash-streaming`。`Endpoint` 和 `APIKey` 必填；远程 endpoint 必须使用 `wss`、固定以 `/api-ws/v1/inference` 结尾且不能携带 query。`WorkspaceID` 与 `UserAgent` 分别映射到 `X-DashScope-WorkSpace` 和 `User-Agent` 请求头。API key 只写入 Bearer Authorization header。
+
+Provider 只接受单声道 raw PCM16；采样率在 `run-task.payload.parameters.sample_rate` 中声明，PCM 数据直接使用 WebSocket Binary Message 发送，不做 Base64 编码或无意义重采样。`MaxSentenceSilence` 默认 1300ms、允许 200ms–6s；`SemanticPunctuationEnabled`、`MultiThresholdModeEnabled`、`Heartbeat`、`SpeechNoiseThreshold` 和 `SpecialWordFilter` 原样映射为服务端断句参数。`VocabularyID` 配置预编译热词；会话 `RecognitionContext.Terms` 映射为即时 vocabulary，`VocabularyWeight` 支持 1–5 或 50，权重 50 时最多发送 50 个词。
+
+显式语言及 language hints 会转换为供应商支持的主语言代码，最多四种；显式语言优先。`RecognitionContext.Prompt` 映射为单条 user/input_text context，并按供应商限制截断至 400 个 Unicode 字符。`result-generated` 中同一个 `sentence_id` 的非句尾结果产生 provisional 修订，`sentence_end=true` 产生 stable；heartbeat 不会输出文本。CloseInput 发送 `finish-task`，会话只在收到 `task-finished` 后完成，或由 `FinishTimeout` 终止。
 
 ## `QwenOmniRealtimeConfig`
 

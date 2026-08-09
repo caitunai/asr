@@ -103,6 +103,36 @@ session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
 
 Qwen adapter 默认启用 server VAD，阈值为 `0.0`，静音确认时长为 `400ms`。一般无需配置；需要覆盖时设置 `ServerVADThreshold`、`ServerVADSilenceDuration`，需要关闭时设置 `DisableServerVAD=true`。启用 server VAD 时，`Finish` 发送 `session.finish`；关闭时先发送 `input_audio_buffer.commit` 再结束会话。`Prompt` 和去重后的 `Terms` 以换行拼成 Qwen `corpus.text`。调用方仍需遵守供应商的 10,000-token corpus 上限。
 
+## DashScope Inference Realtime Provider
+
+`DashScopeInferenceRealtimeProvider` 实现百炼 `/api-ws/v1/inference` 的 `run-task` 协议，默认模型为 `qwen-audio-3.0-asr-flash-streaming`。该协议与上面的 OpenAI Realtime 风格 Qwen Provider 不兼容，因此使用独立 adapter：连接后发送 `run-task` 并等待 `task-started`，音频使用 WebSocket Binary Message 直接发送 PCM16，`result-generated` 的 `sentence_end=false/true` 分别映射 provisional/stable，Finish 发送 `finish-task` 并等待 `task-finished`。
+
+```go
+provider, err := asr.NewDashScopeInferenceRealtimeProvider(asr.DashScopeInferenceRealtimeConfig{
+    Endpoint: "wss://WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+    APIKey:   os.Getenv("DASHSCOPE_API_KEY"),
+    Model:    "qwen-audio-3.0-asr-flash-streaming",
+})
+if err != nil {
+    return err
+}
+
+session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
+    Request: asr.StreamingRequest{
+        LanguageHints: []string{"zh", "en"},
+        Context: asr.RecognitionContext{
+            Prompt: "产品发布会",
+            Terms:  []string{"星河系统", "通义千问"},
+        },
+        SampleRate: 16000,
+        Channels:   1,
+        Format:     asr.AudioFormatRawPCM16,
+    },
+})
+```
+
+`Prompt` 作为一条 `user/input_text` 上下文发送，按协议限制为最多 400 个 Unicode 字符；`Terms` 去重后映射成即时 `vocabulary`，权重默认 5，可配置为 1–5 或超级热词权重 50。明确 `Language` 时优先发送它，否则发送最多四个 `LanguageHints`，区域 tag 会转换为主语言代码。心跳 sentence 被忽略；同一 `sentence_id` 的 partial 会修订同一 provisional，空 final 会撤回已有 partial。Adapter 不发送数据合规检测 header，也不执行自动断线重连。
+
 ## Qwen Omni Realtime Provider
 
 `QwenOmniRealtimeProvider` 把 Qwen-Omni-Realtime 会话限制为 ASR-only：只申请 `text` modality，持续发送 16kHz 单声道 PCM，消费 `conversation.item.input_audio_transcription.delta/completed`，并把 partial 映射为 provisional、completed 映射为 stable。server VAD 会自动触发 Omni 的对话响应；Provider 默认在 `response.created` 后立即发送 `response.cancel`，避免把回答混入 ASR 输出。输入结束时会补一小段静音推动尾句完成，并用 `FinishTimeout` 兜底。
