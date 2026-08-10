@@ -13,6 +13,7 @@ type StreamingCapabilities struct {
 	SupportsLanguageHints bool
 	SupportsServerVAD     bool
 	SupportsResume        bool
+	SupportsContextUpdate bool
 }
 
 type StreamingRequest struct {
@@ -31,6 +32,14 @@ type StreamingAudioChunk struct {
 	Sequence    uint64
 	StartSample int64
 	EndSample   int64
+}
+
+// StreamingContextUpdate contains the immutable request context and the
+// latest provider-final transcripts. Providers may translate it to their own
+// in-session context update protocol without exposing their transport.
+type StreamingContextUpdate struct {
+	Context           RecognitionContext
+	StableTranscripts []string
 }
 
 type ProviderStreamEvent struct {
@@ -66,4 +75,10 @@ type ProviderStream interface {
 	Done() <-chan struct{}
 	Wait(ctx context.Context) error
 	Close()
+}
+
+// ProviderContextUpdater is an optional extension implemented by streams that
+// can update recognition context without reconnecting or dropping audio.
+type ProviderContextUpdater interface {
+	UpdateContext(ctx context.Context, update StreamingContextUpdate) error
 }

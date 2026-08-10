@@ -29,6 +29,7 @@ const (
 	defaultDashScopeInferenceVocabularyWeight = 5
 	dashScopeInferencePath                    = "/api-ws/v1/inference"
 	dashScopeActionRunTask                    = "run-task"
+	dashScopeActionContinueTask               = "continue-task"
 	dashScopeActionFinishTask                 = "finish-task"
 	dashScopeEventTaskStarted                 = "task-started"
 	dashScopeEventResultGenerated             = "result-generated"
@@ -42,6 +43,7 @@ const (
 	dashScopeContextRoleUser                  = "user"
 	dashScopeContextInputText                 = "input_text"
 	dashScopeMaxContextRunes                  = 400
+	dashScopeMaxContextInputs                 = 5
 	dashScopeMaxLanguageHints                 = 4
 	dashScopeMaxSuperVocabulary               = 50
 )
@@ -238,6 +240,7 @@ func (p *DashScopeInferenceRealtimeProvider) StreamingCapabilities() StreamingCa
 		SupportsTerms:         true,
 		SupportsLanguageHints: true,
 		SupportsServerVAD:     true,
+		SupportsContextUpdate: true,
 	}
 }
 
@@ -355,6 +358,37 @@ func (s *dashScopeInferenceStream) CloseInput(ctx context.Context) error {
 		return err
 	}
 	s.startFinishTimer()
+	return nil
+}
+
+func (s *dashScopeInferenceStream) UpdateContext(
+	ctx context.Context,
+	update StreamingContextUpdate,
+) error {
+	if s == nil {
+		return ErrSessionClosed
+	}
+	input := dashScopeUpdatedInput(update)
+	if len(input.Context) == 0 {
+		return ErrInvalidRequest
+	}
+	event := dashScopeClientEvent{
+		Header: dashScopeTaskHeader{
+			Action:    dashScopeActionContinueTask,
+			TaskID:    s.taskID,
+			Streaming: dashScopeStreamingDuplex,
+		},
+		Payload: dashScopeTaskPayload{Input: input},
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.writeClosed {
+		return ErrSessionClosed
+	}
+	if err := s.writeJSON(ctx, event); err != nil {
+		s.fail(err)
+		return err
+	}
 	return nil
 }
 
@@ -717,17 +751,56 @@ func dashScopeVocabulary(terms []string, weight int) map[string]int {
 }
 
 func dashScopeInput(context RecognitionContext) dashScopeTaskInput {
-	prompt := truncateRunes(strings.TrimSpace(context.Prompt), dashScopeMaxContextRunes)
-	if prompt == "" {
+	return dashScopeContextInput(context.Prompt, nil)
+}
+
+func dashScopeUpdatedInput(update StreamingContextUpdate) dashScopeTaskInput {
+	return dashScopeContextInput(update.Context.Prompt, update.StableTranscripts)
+}
+
+func dashScopeContextInput(prompt string, stableTranscripts []string) dashScopeTaskInput {
+	texts := dashScopeContextTexts(prompt, stableTranscripts)
+	if len(texts) == 0 {
 		return dashScopeTaskInput{}
 	}
-	return dashScopeTaskInput{Context: []dashScopeContextMessage{{
-		Role: dashScopeContextRoleUser,
-		Content: []dashScopeContextContent{{
-			Type: dashScopeContextInputText,
-			Text: prompt,
-		}},
-	}}}
+	messages := make([]dashScopeContextMessage, 0, len(texts))
+	for _, text := range texts {
+		messages = append(messages, dashScopeContextMessage{
+			Role: dashScopeContextRoleUser,
+			Content: []dashScopeContextContent{{
+				Type: dashScopeContextInputText,
+				Text: text,
+			}},
+		})
+	}
+	return dashScopeTaskInput{Context: messages}
+}
+
+func dashScopeContextTexts(prompt string, stableTranscripts []string) []string {
+	prompt = strings.TrimSpace(prompt)
+	historyLimit := dashScopeMaxContextInputs
+	texts := make([]string, 0, historyLimit)
+	remaining := dashScopeMaxContextRunes
+	if prompt != "" {
+		prompt = truncateRunes(prompt, remaining)
+		texts = append(texts, prompt)
+		remaining -= utf8.RuneCountInString(prompt)
+		historyLimit--
+	}
+	history := make([]string, 0, min(len(stableTranscripts), historyLimit))
+	for index := len(stableTranscripts) - 1; index >= 0 && len(history) < historyLimit && remaining > 0; index-- {
+		text := strings.TrimSpace(stableTranscripts[index])
+		if text == "" {
+			continue
+		}
+		text = truncateRunes(text, remaining)
+		history = append(history, text)
+		remaining -= utf8.RuneCountInString(text)
+	}
+	for index := len(history) - 1; index >= 0; index-- {
+		texts = append(texts, history[index])
+	}
+	return texts
 }
 
 func truncateRunes(value string, limit int) string {
@@ -777,6 +850,7 @@ func classifyDashScopeTaskError(header dashScopeTaskHeader) error {
 }
 
 var (
-	_ StreamingProvider = (*DashScopeInferenceRealtimeProvider)(nil)
-	_ ProviderStream    = (*dashScopeInferenceStream)(nil)
+	_ StreamingProvider      = (*DashScopeInferenceRealtimeProvider)(nil)
+	_ ProviderStream         = (*dashScopeInferenceStream)(nil)
+	_ ProviderContextUpdater = (*dashScopeInferenceStream)(nil)
 )

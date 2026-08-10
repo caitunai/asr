@@ -9,16 +9,27 @@ import (
 )
 
 const (
-	defaultRealtimeEventBuffer = 128
-	defaultRealtimeWaitTimeout = 20 * time.Second
-	defaultRealtimeChunk       = 100 * time.Millisecond
+	defaultRealtimeEventBuffer        = 128
+	defaultRealtimeWaitTimeout        = 20 * time.Second
+	defaultRealtimeChunk              = 100 * time.Millisecond
+	defaultRealtimeContextHistory     = 4
+	defaultRealtimeContextHistoryRune = 400
+	maxRealtimeContextHistory         = 100
+	maxRealtimeContextHistoryRunes    = 64 * 1024
 )
+
+type RealtimeContextUpdateConfig struct {
+	DisableAutomatic bool
+	MaxHistoryItems  int
+	MaxHistoryRunes  int
+}
 
 type RealtimeSessionConfig struct {
 	Request            StreamingRequest
 	EventBuffer        int
 	MinimumWaitTimeout time.Duration
 	ChunkDuration      time.Duration
+	ContextUpdate      RealtimeContextUpdateConfig
 }
 
 // RealtimeSession adapts a persistent provider stream to AudioSession. It
@@ -37,6 +48,7 @@ type RealtimeSession struct {
 
 	inputMu    sync.Mutex
 	resultMu   sync.Mutex
+	contextMu  sync.Mutex
 	closeOnce  sync.Once
 	finishOnce sync.Once
 
@@ -49,11 +61,16 @@ type RealtimeSession struct {
 	pending      []float32
 	items        map[string]*realtimeResultState
 	waitErr      error
+	contextItems []string
+	contextBase  RecognitionContext
+	contextVer   uint64
+	contextSent  uint64
 }
 
 type realtimeResultState struct {
-	index    int
-	revision int
+	index     int
+	revision  int
+	finalized bool
 }
 
 func NewRealtimeSession(
@@ -87,6 +104,18 @@ func NewRealtimeSession(
 	if cfg.ChunkDuration < 20*time.Millisecond || cfg.ChunkDuration > time.Second {
 		return nil, ErrInvalidConfig
 	}
+	if cfg.ContextUpdate.MaxHistoryItems < 0 ||
+		cfg.ContextUpdate.MaxHistoryItems > maxRealtimeContextHistory ||
+		cfg.ContextUpdate.MaxHistoryRunes < 0 ||
+		cfg.ContextUpdate.MaxHistoryRunes > maxRealtimeContextHistoryRunes {
+		return nil, ErrInvalidConfig
+	}
+	if cfg.ContextUpdate.MaxHistoryItems == 0 {
+		cfg.ContextUpdate.MaxHistoryItems = defaultRealtimeContextHistory
+	}
+	if cfg.ContextUpdate.MaxHistoryRunes == 0 {
+		cfg.ContextUpdate.MaxHistoryRunes = defaultRealtimeContextHistoryRune
+	}
 	chunkSamples := int(durationSamples(cfg.ChunkDuration, int64(cfg.Request.SampleRate)))
 	if chunkSamples <= 0 {
 		return nil, ErrInvalidConfig
@@ -109,6 +138,7 @@ func NewRealtimeSession(
 		chunkSamples: chunkSamples,
 		pending:      make([]float32, 0, chunkSamples),
 		items:        make(map[string]*realtimeResultState),
+		contextBase:  cloneRecognitionContext(cfg.Request.Context),
 	}
 	go session.run(sessionCtx)
 	return session, nil
@@ -158,6 +188,25 @@ func (s *RealtimeSession) Finish(ctx context.Context, final FinalAudioChunk) err
 	return nil
 }
 
+func (s *RealtimeSession) UpdateContext(ctx context.Context, recognitionContext RecognitionContext) error {
+	if s == nil {
+		return ErrSessionClosed
+	}
+	s.inputMu.Lock()
+	defer s.inputMu.Unlock()
+	if s.finished {
+		return ErrSessionClosed
+	}
+	if _, ok := s.stream.(ProviderContextUpdater); !ok {
+		return ErrContextUpdateUnsupported
+	}
+	s.contextMu.Lock()
+	s.contextBase = cloneRecognitionContext(recognitionContext)
+	s.contextVer++
+	s.contextMu.Unlock()
+	return s.updateContextLocked(ctx, true)
+}
+
 func (s *RealtimeSession) pushSamplesLocked(ctx context.Context, samples []float32) error {
 	if len(samples) == 0 {
 		return nil
@@ -189,6 +238,9 @@ func (s *RealtimeSession) flushPendingLocked(ctx context.Context) error {
 }
 
 func (s *RealtimeSession) writeSamplesLocked(ctx context.Context, samples []float32) error {
+	if err := s.updateContextLocked(ctx, false); err != nil {
+		return err
+	}
 	payload, err := EncodeAudio(samples, s.cfg.Request.SampleRate, s.cfg.Request.Channels, AudioFormatRawPCM16)
 	if err != nil {
 		return err
@@ -206,6 +258,39 @@ func (s *RealtimeSession) writeSamplesLocked(ctx context.Context, samples []floa
 	}
 	s.chunkSeq++
 	s.sampleCount = end
+	return nil
+}
+
+func (s *RealtimeSession) updateContextLocked(ctx context.Context, force bool) error {
+	if s.cfg.ContextUpdate.DisableAutomatic && !force {
+		return nil
+	}
+	updater, ok := s.stream.(ProviderContextUpdater)
+	if !ok {
+		return nil
+	}
+	s.contextMu.Lock()
+	if s.contextVer == s.contextSent {
+		s.contextMu.Unlock()
+		return nil
+	}
+	version := s.contextVer
+	transcripts := append([]string(nil), s.contextItems...)
+	baseContext := cloneRecognitionContext(s.contextBase)
+	s.contextMu.Unlock()
+
+	update := StreamingContextUpdate{
+		Context:           baseContext,
+		StableTranscripts: transcripts,
+	}
+	if err := updater.UpdateContext(ctx, update); err != nil {
+		return realtimeProviderRequestError(err)
+	}
+	s.contextMu.Lock()
+	if version > s.contextSent {
+		s.contextSent = version
+	}
+	s.contextMu.Unlock()
 	return nil
 }
 
@@ -347,6 +432,10 @@ func (s *RealtimeSession) emitTranscript(providerEvent ProviderStreamEvent) {
 	if providerEvent.IsFinal {
 		result.FinalizationReason = FinalizationProviderFinal
 		result.EvidenceQuality = EvidenceProviderFinal
+		if !state.finalized {
+			state.finalized = true
+			s.rememberStableTranscript(text)
+		}
 	}
 	s.emit(Event{
 		Type:      EventSegmentResult,
@@ -355,6 +444,51 @@ func (s *RealtimeSession) emitTranscript(providerEvent ProviderStreamEvent) {
 		Model:     s.provider.Model(),
 		Segment:   result,
 	})
+}
+
+func (s *RealtimeSession) rememberStableTranscript(text string) {
+	if s.cfg.ContextUpdate.DisableAutomatic {
+		return
+	}
+	if _, ok := s.stream.(ProviderContextUpdater); !ok {
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.contextMu.Lock()
+	defer s.contextMu.Unlock()
+	s.contextItems = append(s.contextItems, text)
+	if excess := len(s.contextItems) - s.cfg.ContextUpdate.MaxHistoryItems; excess > 0 {
+		s.contextItems = append([]string(nil), s.contextItems[excess:]...)
+	}
+	s.contextItems = trimRealtimeContextHistory(
+		s.contextItems,
+		s.cfg.ContextUpdate.MaxHistoryRunes,
+	)
+	s.contextVer++
+}
+
+func trimRealtimeContextHistory(items []string, maxRunes int) []string {
+	remaining := maxRunes
+	start := len(items)
+	for start > 0 {
+		count := len([]rune(items[start-1]))
+		if count > remaining {
+			break
+		}
+		remaining -= count
+		start--
+	}
+	if start == len(items) {
+		latest := []rune(items[len(items)-1])
+		if len(latest) > maxRunes {
+			latest = latest[len(latest)-maxRunes:]
+		}
+		return []string{string(latest)}
+	}
+	return append([]string(nil), items[start:]...)
 }
 
 func (s *RealtimeSession) emitProviderError(providerEvent ProviderStreamEvent) {
@@ -401,4 +535,7 @@ func (s *RealtimeSession) emit(event Event) {
 	}
 }
 
-var _ AudioSession = (*RealtimeSession)(nil)
+var (
+	_ AudioSession               = (*RealtimeSession)(nil)
+	_ AudioSessionContextUpdater = (*RealtimeSession)(nil)
+)

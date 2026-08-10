@@ -133,6 +133,8 @@ session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
 
 `Prompt` 作为一条 `user/input_text` 上下文发送，按协议限制为最多 400 个 Unicode 字符；`Terms` 去重后映射成即时 `vocabulary`，权重默认 5，可配置为 1–5 或超级热词权重 50。明确 `Language` 时优先发送它，否则发送最多四个 `LanguageHints`，区域 tag 会转换为主语言代码。心跳 sentence 被忽略；同一 `sentence_id` 的 partial 会修订同一 provisional，空 final 会撤回已有 partial。Adapter 不发送数据合规检测 header，也不执行自动断线重连。
 
+该 Provider 实现可选的 `ProviderContextUpdater`。`RealtimeSession` 默认把最近 4 条 provider-final stable 文本保存在最多 400 个 Unicode 字符的有界历史中；收到 stable 后不会阻塞结果输出，而是在发送下一块音频前先发送 `continue-task`，上下文包含初始 `Prompt` 和最近识别结果。同一连接的写锁保证 context update 先于后续 PCM，协议没有不存在的确认事件等待。可通过 `RealtimeSessionConfig.ContextUpdate.DisableAutomatic=true` 关闭，或使用 `MaxHistoryItems`、`MaxHistoryRunes` 调整 SDK 历史上限；DashScope 最终仍按最多 5 条 input_text、总计 400 字符收口。需要由应用主动替换 Prompt 时，可对 `RealtimeSession`（或 `AudioSessionContextUpdater`）调用 `UpdateContext`；显式更新即使关闭自动历史也仍然可用。
+
 ## Qwen Omni Realtime Provider
 
 `QwenOmniRealtimeProvider` 把 Qwen-Omni-Realtime 会话限制为 ASR-only：只申请 `text` modality，持续发送 16kHz 单声道 PCM，消费 `conversation.item.input_audio_transcription.delta/completed`，并把 partial 映射为 provisional、completed 映射为 stable。server VAD 会自动触发 Omni 的对话响应；Provider 默认在 `response.created` 后立即发送 `response.cancel`，避免把回答混入 ASR 输出。输入结束时会补一小段静音推动尾句完成，并用 `FinishTimeout` 兜底。

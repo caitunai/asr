@@ -205,6 +205,9 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.qwenInferenceRealtime.heartbeat` | bool | false | 否 | 持续静音时启用供应商心跳；心跳结果不会发布为文本。 |
 | `asr.providers.qwenInferenceRealtime.speechNoiseThreshold` | float | 供应商默认 | 否 | 语音/噪声阈值，范围 -1–1。 |
 | `asr.providers.qwenInferenceRealtime.specialWordFilter` | string | 空 | 否 | 原样传入供应商敏感词过滤配置。 |
+| `asr.providers.qwenInferenceRealtime.automaticContextEnabled` | bool | true | 否 | 收到 stable 后，是否在下一块音频前通过 `continue-task` 自动发送最近识别上下文。 |
+| `asr.providers.qwenInferenceRealtime.contextHistoryItems` | int | 4 | 否 | SDK 保存的最近 stable 条数；DashScope 最终最多发送 5 条 input_text，初始 Prompt 会占一条。 |
+| `asr.providers.qwenInferenceRealtime.contextHistoryRunes` | int | 400 | 否 | SDK stable 历史字符上限；Provider 还会确保 Prompt 与历史合计不超过供应商的 400 字符限制。 |
 | `asr.providers.qwenInferenceRealtime.audioChunkMs` | duration/ms | 100ms | 否 | 聚合后以 binary frame 发送的 PCM chunk 时长。 |
 | `asr.providers.qwenInferenceRealtime.handshakeTimeout` | duration | 10s | 否 | 等待 `task-started` 的上限。 |
 | `asr.providers.qwenInferenceRealtime.writeTimeout` | duration | 5s | 否 | run/finish task 和 binary audio 单次写入上限。 |
@@ -446,6 +449,8 @@ DashScope Inference adapter 实现 `/api-ws/v1/inference` 的 `run-task` 协议�
 Provider 只接受单声道 raw PCM16；采样率在 `run-task.payload.parameters.sample_rate` 中声明，PCM 数据直接使用 WebSocket Binary Message 发送，不做 Base64 编码或无意义重采样。`MaxSentenceSilence` 默认 1300ms、允许 200ms–6s；`SemanticPunctuationEnabled`、`MultiThresholdModeEnabled`、`Heartbeat`、`SpeechNoiseThreshold` 和 `SpecialWordFilter` 原样映射为服务端断句参数。`VocabularyID` 配置预编译热词；会话 `RecognitionContext.Terms` 映射为即时 vocabulary，`VocabularyWeight` 支持 1–5 或 50，权重 50 时最多发送 50 个词。
 
 显式语言及 language hints 会转换为供应商支持的主语言代码，最多四种；显式语言优先。`RecognitionContext.Prompt` 映射为单条 user/input_text context，并按供应商限制截断至 400 个 Unicode 字符。`result-generated` 中同一个 `sentence_id` 的非句尾结果产生 provisional 修订，`sentence_end=true` 产生 stable；heartbeat 不会输出文本。CloseInput 发送 `finish-task`，会话只在收到 `task-finished` 后完成，或由 `FinishTimeout` 终止。
+
+Provider 同时实现 `ProviderContextUpdater.UpdateContext`，将统一的 `StreamingContextUpdate` 映射为 `continue-task`。`RealtimeSession` 默认自动保存最近 4 条 provider-final stable 结果、最多 400 个 Unicode 字符；下一块 PCM 写入前若上下文有更新，会先同步写入 `continue-task`。供应商没有 `task-continued` 响应事件，因此 SDK 只等待 WebSocket 写入完成，不增加虚假的确认等待。可通过 `RealtimeSessionConfig.ContextUpdate` 禁用或调整有界历史；partial/provisional、discarded 和错误结果不会进入上下文。应用也可通过 `AudioSessionContextUpdater.UpdateContext` 主动替换当前 Prompt；显式更新不受 `DisableAutomatic` 影响，Terms 仍只能在 `run-task` 时设置。
 
 ## `QwenOmniRealtimeConfig`
 

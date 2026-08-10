@@ -95,3 +95,9 @@ type AudioSession interface {
 	RecommendedWaitTimeout() time.Duration
 	Close()
 }
+
+// AudioSessionContextUpdater is an optional extension for sessions whose
+// provider can replace recognition context while audio streaming continues.
+type AudioSessionContextUpdater interface {
+	UpdateContext(ctx context.Context, context RecognitionContext) error
+}
