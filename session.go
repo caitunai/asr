@@ -544,7 +544,14 @@ func (a *sessionActor) handleWindowCompletion(completion windowCompletion) {
 			Provider:         completion.result.Provider,
 			Model:            completion.result.Model,
 			Words:            append([]Word(nil), completion.result.Words...),
+			Sentences:        cloneTranscriptSentences(completion.result.Sentences),
+			Usage:            cloneRecognitionUsage(completion.result.Usage),
 		},
+	}
+	hasProviderDetails := len(evidence.result.Sentences) > 0 || evidence.result.Usage != nil
+	if hasProviderDetails {
+		window := evidence.result
+		a.emit(Event{Type: EventWindowResult, Window: &window})
 	}
 	if completion.task.kind == windowKindFallback {
 		a.publishFallbackSegment(chain, evidence)
@@ -561,7 +568,7 @@ func (a *sessionActor) handleWindowCompletion(completion windowCompletion) {
 	chain.windows[completion.task.localIndex] = evidence
 	if completion.task.localIndex == 1 {
 		a.publishPreview(chain, evidence)
-	} else {
+	} else if !hasProviderDetails {
 		window := evidence.result
 		a.emit(Event{Type: EventWindowResult, Window: &window})
 	}
@@ -618,6 +625,8 @@ func (a *sessionActor) handleDirectCompletion(chain *chainState, completion wind
 		Text:               text,
 		FinalizationReason: FinalizationProviderFinal,
 		EvidenceQuality:    EvidenceProviderFinal,
+		Sentences:          cloneTranscriptSentences(completion.result.Sentences),
+		Usage:              cloneRecognitionUsage(completion.result.Usage),
 	}
 	a.emit(Event{
 		Type:     EventSegmentResult,

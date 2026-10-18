@@ -450,7 +450,7 @@ func verifyDashScopeContinueTask(conn *websocket.Conn, taskID string, wantTexts 
 		return ErrProviderRequest
 	}
 	for index, message := range event.Payload.Input.Context {
-		if message.Role != dashScopeContextRoleUser || len(message.Content) != 1 ||
+		if message.Role != RecognitionContextRoleUser || len(message.Content) != 1 ||
 			message.Content[0].Type != dashScopeContextInputText ||
 			message.Content[0].Text != wantTexts[index] {
 			return ErrProviderRequest

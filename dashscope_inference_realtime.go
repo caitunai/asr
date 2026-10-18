@@ -40,7 +40,6 @@ const (
 	dashScopeTaskASR                          = "asr"
 	dashScopeFunctionRecognition              = "recognition"
 	dashScopeAudioFormatPCM                   = "pcm"
-	dashScopeContextRoleUser                  = "user"
 	dashScopeContextInputText                 = "input_text"
 	dashScopeMaxContextRunes                  = 400
 	dashScopeMaxContextInputs                 = 5
@@ -766,7 +765,7 @@ func dashScopeContextInput(prompt string, stableTranscripts []string) dashScopeT
 	messages := make([]dashScopeContextMessage, 0, len(texts))
 	for _, text := range texts {
 		messages = append(messages, dashScopeContextMessage{
-			Role: dashScopeContextRoleUser,
+			Role: RecognitionContextRoleUser,
 			Content: []dashScopeContextContent{{
 				Type: dashScopeContextInputText,
 				Text: text,

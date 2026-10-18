@@ -64,10 +64,21 @@ const (
 )
 
 type RecognitionContext struct {
-	Prompt      string            `json:"prompt,omitempty"`
-	Terms       []string          `json:"terms,omitempty"`
-	ExtraFields map[string]string `json:"extra_fields,omitempty"`
+	Prompt      string                      `json:"prompt,omitempty"`
+	Terms       []string                    `json:"terms,omitempty"`
+	Messages    []RecognitionContextMessage `json:"messages,omitempty"`
+	ExtraFields map[string]string           `json:"extra_fields,omitempty"`
 }
+
+type RecognitionContextMessage struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+}
+
+const (
+	RecognitionContextRoleUser      = "user"
+	RecognitionContextRoleAssistant = "assistant"
+)
 
 type Capabilities struct {
 	Formats               []AudioFormat
@@ -108,6 +119,37 @@ type ProviderResult struct {
 	Provider         string
 	Model            string
 	Duration         time.Duration
+	Sentences        []TranscriptSentence
+	Usage            *RecognitionUsage
+}
+
+// TranscriptSentence retains provider sentence details. Times are seconds
+// relative to the submitted audio window; speaker IDs are local to that request.
+type TranscriptSentence struct {
+	ID        int            `json:"id"`
+	Text      string         `json:"text"`
+	StartAt   float64        `json:"start_at"`
+	EndAt     float64        `json:"end_at"`
+	Final     bool           `json:"final"`
+	ChannelID int            `json:"channel_id"`
+	SpeakerID *int           `json:"speaker_id,omitempty"`
+	Words     []SentenceWord `json:"words,omitempty"`
+}
+
+type SentenceWord struct {
+	Text        string  `json:"text"`
+	Punctuation string  `json:"punctuation,omitempty"`
+	StartAt     float64 `json:"start_at"`
+	EndAt       float64 `json:"end_at"`
+	Fixed       bool    `json:"fixed"`
+	SpeakerID   *int    `json:"speaker_id,omitempty"`
+}
+
+type RecognitionUsage struct {
+	Duration     float64 `json:"duration"`
+	InputTokens  int     `json:"input_tokens,omitzero"`
+	OutputTokens int     `json:"output_tokens,omitzero"`
+	TotalTokens  int     `json:"total_tokens,omitzero"`
 }
 
 type Provider interface {
@@ -163,6 +205,10 @@ type SegmentResult struct {
 	Text               string             `json:"text"`
 	FinalizationReason FinalizationReason `json:"finalization_reason,omitempty"`
 	EvidenceQuality    EvidenceQuality    `json:"evidence_quality,omitempty"`
+	// Provider details are available for single_segment direct results only;
+	// contextual alignment publishes them on the source WindowResult instead.
+	Sentences []TranscriptSentence `json:"sentences,omitempty"`
+	Usage     *RecognitionUsage    `json:"usage,omitempty"`
 }
 
 // IntermediateResult is a non-authoritative transcript from the beginning of
@@ -194,14 +240,16 @@ type RevisionBatch struct {
 }
 
 type WindowResult struct {
-	RequestID        string       `json:"request_id"`
-	WindowIndex      int          `json:"window_index"`
-	Segments         []SegmentRef `json:"segments"`
-	Text             string       `json:"text"`
-	DetectedLanguage string       `json:"detected_language,omitempty"`
-	Provider         string       `json:"provider"`
-	Model            string       `json:"model"`
-	Words            []Word       `json:"words,omitempty"`
+	RequestID        string               `json:"request_id"`
+	WindowIndex      int                  `json:"window_index"`
+	Segments         []SegmentRef         `json:"segments"`
+	Text             string               `json:"text"`
+	DetectedLanguage string               `json:"detected_language,omitempty"`
+	Provider         string               `json:"provider"`
+	Model            string               `json:"model"`
+	Words            []Word               `json:"words,omitempty"`
+	Sentences        []TranscriptSentence `json:"sentences,omitempty"`
+	Usage            *RecognitionUsage    `json:"usage,omitempty"`
 }
 
 type EventError struct {

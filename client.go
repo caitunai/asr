@@ -121,8 +121,9 @@ func (c *Client) Transcribe(ctx context.Context, request TranscriptionRequest) (
 
 func cloneRecognitionContext(value RecognitionContext) RecognitionContext {
 	cloned := RecognitionContext{
-		Prompt: value.Prompt,
-		Terms:  slices.Clone(value.Terms),
+		Prompt:   value.Prompt,
+		Terms:    slices.Clone(value.Terms),
+		Messages: slices.Clone(value.Messages),
 	}
 	if len(value.ExtraFields) > 0 {
 		cloned.ExtraFields = make(map[string]string, len(value.ExtraFields))

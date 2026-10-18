@@ -145,6 +145,38 @@ vLLM adapter 只接受 16kHz mono PCM16。`transcription.delta` 是只追加的�
 
 generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response_format=json`。请求上下文中的 prompt 去除首尾空白后非空时才发送 `prompt`；不会发送 model、language、hotwords 或 language_hints。
 
+Qwen HTTP native JSON 使用：
+
+```toml
+[asr]
+enabled=true
+provider="qwenHTTP"
+defaultLanguage="zh-CN"
+
+[asr.providers.qwenHTTP]
+baseURL="https://WORKSPACE_ID.cn-beijing.maas.aliyuncs.com"
+model="qwen-audio-3.1-asr-flash"
+# Optional 3.1 features; omit to use the service defaults (false).
+# speakerDiarizationEnabled=false
+# keepDialect=false
+# apiKey="..." # 未设置时继承 qwenRealtime.apiKey
+```
+
+Qwen HTTP 固定使用 DashScope native `/api/v1/services/aigc/multimodal-generation/generation`。OpenAI-compatible 接口使用独立且供应商无关的 `chatCompletions` Provider：
+
+```toml
+[asr]
+provider="chatCompletions"
+
+[asr.providers.chatCompletions]
+baseURL="https://WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/compatible-mode"
+path="/v1/chat/completions"
+model="qwen3-asr-flash"
+apiKey="..."
+```
+
+两个 Provider 均为同步 HTTP window，不是实时 WebSocket。`chatCompletions` 不按模型名推断供应商或协议，因此也可用于其他接受 `input_audio` 内容的兼容模型。
+
 ## 应用层完整配置
 
 下表中的非必填项均有代码默认值。它们仍可通过 TOML 或 Viper 环境变量覆盖，但通常只在真实语料评测和容量测试后调整。
@@ -153,10 +185,10 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 |---|---|---:|---|---|
 | `asr.enabled` | bool | false | 否 | 是否在进程启动时创建 ASR provider/client。 |
 | `asr.defaultEnabled` | bool | true | 否 | WebSocket `audio.start` 未提供 ASR enabled 时的会话默认值。 |
-| `asr.provider` | string | `generic` | 否 | `generic`、`microsoft`、`qwenRealtime`、`qwenInferenceRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
+| `asr.provider` | string | `generic` | 否 | `generic`、`microsoft`、`qwenHTTP`、`chatCompletions`、`qwenRealtime`、`qwenInferenceRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.segmentStrategy` | string | `contextual` | 否 | HTTP 分段 provider 的识别策略。`contextual` 使用短静音 preview、邻接双窗口和对齐；`single_segment` 对每个正式 VAD/超长语音安全 Segment 只创建一个识别任务并直接 stable。实时 provider 忽略该项。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
-| `asr.requestTimeout` | duration string | generic `8s`；microsoft `20s` | 否 | 单次 provider HTTP 请求超时。 |
+| `asr.requestTimeout` | duration string | generic `8s`；microsoft `20s`；qwenHTTP/chatCompletions `30s` | 否 | 单次 provider HTTP 请求超时。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
 | `asr.maxConcurrency` | int | 16 | 否 | 全局 ASR client 并发上限；单会话 scheduler 仍保持一个 active。 |
 | `asr.contextSilenceMs` | duration/ms | 200ms | 否 | 拼接两个有间隔 VAD segment 时插入的静音。时间连续时不插入。 |
@@ -179,6 +211,23 @@ generic adapter 固定使用 WAV、multipart `file`、Bearer 鉴权和 `response
 | `asr.providers.microsoft.defaultLanguage` | string | `en-US` | 否 | 会话语言为 `auto` 时实际发送的 Microsoft locale。 |
 | `asr.providers.microsoft.responseBodyLimit` | int | 2 MiB | 否 | 单次 JSON 响应体字节上限。 |
 | `asr.providers.microsoft.allowInsecureHTTP` | bool | false | 否 | 允许非 loopback 明文 HTTP，仅限受控开发网络。 |
+| `asr.providers.qwenHTTP.baseURL` | string | 无 | qwenHTTP 启用时必填 | 地域/Workspace HTTPS 根地址，不包含接口 path。 |
+| `asr.providers.qwenHTTP.path` | string | `/api/v1/services/aigc/multimodal-generation/generation` | 否 | DashScope native multimodal-generation path。 |
+| `asr.providers.qwenHTTP.apiKey` | string | 继承 qwenRealtime | 无法继承时必填 | 百炼 API key，只进入 Bearer Authorization header。 |
+| `asr.providers.qwenHTTP.model` | string | `qwen-audio-3.0-asr-flash` | 否 | 支持 DashScope native multimodal-generation 的 ASR 模型。 |
+| `asr.providers.qwenHTTP.vocabularyID` | string | 空 | 否 | DashScope native 模式预编译热词 ID。 |
+| `asr.providers.qwenHTTP.vocabularyWeight` | int | 5 | 否 | native 模式即时热词权重，支持 1–5 或 50。 |
+| `asr.providers.qwenHTTP.speakerDiarizationEnabled` | bool | 不发送（服务端 false） | 否 | 仅 3.1：启用说话人分离，返回 sentences 和 speaker ID。开启后不发送 language_hints、keep_dialect。 |
+| `asr.providers.qwenHTTP.keepDialect` | bool | 不发送（服务端 false） | 否 | 仅 3.1：true 保留方言表达；false 转写为普通话文本。说话人分离启用时无效。 |
+| `asr.providers.qwenHTTP.responseBodyLimit` | int | 2 MiB | 否 | 同步 JSON 响应体字节上限。 |
+| `asr.providers.qwenHTTP.allowInsecureHTTP` | bool | false | 否 | 允许非 loopback 明文 HTTP，仅用于受控测试。 |
+| `asr.providers.chatCompletions.baseURL` | string | 无 | 启用时必填 | OpenAI-compatible 服务根地址；可以包含供应商路径前缀。 |
+| `asr.providers.chatCompletions.path` | string | `/v1/chat/completions` | 否 | Chat Completions 请求 path。 |
+| `asr.providers.chatCompletions.apiKey` | string | 空 | 否 | Bearer API key；本地无鉴权服务可留空。 |
+| `asr.providers.chatCompletions.model` | string | 无 | 启用时必填 | 服务端实际部署的模型名，不参与协议推断。 |
+| `asr.providers.chatCompletions.enableITN` | bool | 不发送 | 否 | 可选扩展字段 `asr_options.enable_itn`。 |
+| `asr.providers.chatCompletions.responseBodyLimit` | int | 2 MiB | 否 | 同步 JSON 响应体字节上限。 |
+| `asr.providers.chatCompletions.allowInsecureHTTP` | bool | false | 否 | 允许非 loopback 明文 HTTP，仅用于受控测试。 |
 | `asr.providers.qwenRealtime.endpoint` | string | 无 | qwenRealtime 启用时必填 | 供应商实时 WebSocket URL；远程地址必须使用 `wss`。model query 由 adapter 写入。 |
 | `asr.providers.qwenRealtime.apiKey` | string | 无 | qwenRealtime 启用时必填 | 百炼 API key，只用于供应商侧 Authorization header。 |
 | `asr.providers.qwenRealtime.model` | string | `qwen3-asr-flash-realtime` | 否 | 实时模型名称。 |

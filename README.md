@@ -52,6 +52,37 @@ recognizer, err := asr.NewClient(provider, asr.ClientConfig{
 })
 ```
 
+## Qwen HTTP 与 Chat Completions Provider
+
+两个 Provider 都保留现有本地 VAD、HTTP window、相邻片段识别和 Unicode 对齐，并将 WAV 编码为 `data:audio/wav;base64,...`：
+
+- `QwenHTTPProvider` 只负责 DashScope native multimodal-generation 协议，发送 `input.messages`、`parameters.language_hints`、即时/预编译热词，读取 `output.text` 或 `output.output.sentence.text`。
+- `ChatCompletionsProvider` 负责供应商无关的 OpenAI-compatible `/chat/completions` 协议，发送 `messages`、可选 `asr_options.language`/`enable_itn`，读取 `choices[].message.content`。Base URL、path 和 model 均由调用方配置，不依赖模型名称判断协议。
+
+初始 `RecognitionContext.Prompt` 和 `Messages` 会放在当前音频消息之前；Qwen HTTP 的 `Terms` 映射为即时 vocabulary，Chat Completions 的 `Terms` 作为文本上下文发送。
+
+Qwen-Audio 3.1 使用 `QwenHTTPConfig.Model = "qwen-audio-3.1-asr-flash"`。可选的 `SpeakerDiarizationEnabled`、`KeepDialect` 为 `*bool`，nil 表示不发送（供应商默认 false），也可显式传入 false。开启说话人分离时，不发送不生效的 `language_hints` 和 `keep_dialect`；这两个新开关仅允许用于 3.1 模型。SDK 未指定模型时仍默认 3.0，避免已有调用自动切换模型。
+
+同步响应支持 `output.text`、`output.sentences`、`output.sentence` 及旧的 `output.output.sentence`。`ProviderResult.Sentences` 保留句子、词、标点、fixed 和 speaker ID（0 是有效 ID）；时间统一为相对本次音频窗口的秒数。`Usage` 保留音频秒数和输入/输出/总 Token 数，并随 `asr.window_result` 输出。说话人编号仅在单次请求内有效，不保证跨 VAD window 一致；这些字段不会自动转为页面的分说话人展示。句子词时间戳不直接填入全窗口 `Words`，避免只有最后一句时间戳时影响邻接窗口对齐。
+
+当前使用 WAV Base64 Data URL 和同步最终结果（`X-DashScope-SSE: disable`），未实现公网音频 URL 输入或长文件 SSE 返回。文档中的原生文本润色没有独立请求开关，SDK 不构造额外参数。
+
+在 `single_segment` 模式中，没有窗口对齐事件，句子详情和用量直接放在 `asr.segment_result.segment.sentences/usage` 中；时间原点是该单片段的音频起点。
+
+```go
+provider, err := asr.NewChatCompletionsProvider(asr.ChatCompletionsConfig{
+    BaseURL: "https://WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/compatible-mode",
+    Path:    "/v1/chat/completions",
+    APIKey:  os.Getenv("DASHSCOPE_API_KEY"),
+    Model:   "qwen3-asr-flash",
+})
+if err != nil {
+    return err
+}
+```
+
+显式语言优先于候选语言：Chat Completions 映射到 `asr_options.language`，Qwen HTTP 映射到 `parameters.language_hints`。`auto` 且没有候选语言时不发送语种字段，让模型自动检测。
+
 ## Microsoft Speech HTTP Provider
 
 `MicrosoftHTTPProvider` 实现 Microsoft Speech REST Conversation API。它属于分段 HTTP provider：调用方仍把连续 PCM 和 VAD boundary 交给 `SegmentedSession`，SDK 对短静音预览、正式 VAD 片段及相邻双窗口编码 WAV 后请求 Microsoft。它不是 Microsoft WebSocket streaming adapter，因此不会绕过本地 VAD 或相邻窗口确认。
