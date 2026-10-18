@@ -14,6 +14,19 @@ import (
 
 func TestDashScopeMessageProtocol(t *testing.T) {
 	t.Parallel()
+	for _, model := range []string{QwenASRMessageModel, QwenASRStreamingModel} {
+		t.Run(model, func(t *testing.T) { testDashScope31Protocol(t, model) })
+	}
+}
+
+func testDashScope31Protocol(t *testing.T, model string) {
+	t.Helper()
+	messageModel := isQwenMessageModel(model)
+	sampleRate := 24000
+	if messageModel {
+		sampleRate = 16000
+	}
+	chunkSamples := sampleRate / 10
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -29,12 +42,22 @@ func TestDashScopeMessageProtocol(t *testing.T) {
 			return
 		}
 		p := run.Payload.Parameters
-		if p == nil || run.Header.Action != dashScopeActionRunTask || run.Payload.Model != QwenASRMessageModel ||
-			p.SampleRate != 16000 || p.Format != "pcm" || p.MaxSentenceSilence != 800 ||
-			p.IntermediateResultEnabled == nil || !*p.IntermediateResultEnabled || p.VADModel != defaultQwenMessageVAD ||
-			p.DisfluencyRemovalEnabled == nil || *p.DisfluencyRemovalEnabled || p.KeepDialect == nil || !*p.KeepDialect ||
+		if p == nil || run.Header.Action != dashScopeActionRunTask || run.Payload.Model != model ||
+			p.SampleRate != sampleRate || p.Format != "pcm" || p.MaxSentenceSilence != 800 ||
+			p.VADModel != defaultQwenMessageVAD || p.KeepDialect == nil || !*p.KeepDialect ||
 			!slices.Equal(p.LanguageHints, []string{"zh", "en"}) || p.Vocabulary["百炼"] != 5 {
 			t.Errorf("run task = %+v parameters=%+v", run, p)
+			return
+		}
+		if messageModel {
+			if p.IntermediateResultEnabled == nil || !*p.IntermediateResultEnabled ||
+				p.DisfluencyRemovalEnabled == nil || *p.DisfluencyRemovalEnabled {
+				t.Error("missing Message parameters")
+				return
+			}
+		} else if p.IntermediateResultEnabled != nil || p.DisfluencyRemovalEnabled != nil ||
+			!p.MultiThresholdModeEnabled || p.SpecialWordFilter != "{}" || p.VocabularyID != "vocab-test" {
+			t.Error("incorrect Streaming parameters")
 			return
 		}
 		if len(run.Payload.Input.Context) != 2 || run.Payload.Input.Context[1].Role != RecognitionContextRoleAssistant {
@@ -55,7 +78,7 @@ func TestDashScopeMessageProtocol(t *testing.T) {
 		if !send(dashScopeEventTaskStarted, nil, nil) {
 			return
 		}
-		if err := verifyDashScopeBinaryAudio(conn, 3200); err != nil {
+		if err := verifyDashScopeBinaryAudio(conn, chunkSamples*2); err != nil {
 			t.Error(err)
 			return
 		}
@@ -75,17 +98,20 @@ func TestDashScopeMessageProtocol(t *testing.T) {
 				return
 			}
 		}
-		var update dashScopeClientEvent
-		if err := conn.ReadJSON(&update); err != nil {
-			t.Error(err)
-			return
+		if messageModel {
+			var update dashScopeClientEvent
+			if err := conn.ReadJSON(&update); err != nil {
+				t.Error(err)
+				return
+			}
+			if update.Header.Action != dashScopeActionContinueTask || update.Header.TaskID != id ||
+				len(update.Payload.Input.Context) != 3 || update.Payload.Input.Context[2].Content[0].Text != "你好 world。" {
+				t.Errorf("update = %+v", update)
+				return
+			}
 		}
-		if update.Header.Action != dashScopeActionContinueTask || update.Header.TaskID != id ||
-			len(update.Payload.Input.Context) != 3 || update.Payload.Input.Context[2].Content[0].Text != "你好 world。" {
-			t.Errorf("update = %+v", update)
-			return
-		}
-		if err := verifyDashScopeBinaryAudio(conn, 3200); err != nil {
+		// Streaming must send PCM next, never an undocumented continue-task.
+		if err := verifyDashScopeBinaryAudio(conn, chunkSamples*2); err != nil {
 			t.Error(err)
 			return
 		}
@@ -96,17 +122,24 @@ func TestDashScopeMessageProtocol(t *testing.T) {
 		send(dashScopeEventTaskFinished, nil, &RecognitionUsage{InputTokens: 20, OutputTokens: 3, TotalTokens: 23})
 	}))
 	defer server.Close()
-	provider, err := NewDashScopeInferenceRealtimeProvider(DashScopeInferenceRealtimeConfig{
+	cfg := DashScopeInferenceRealtimeConfig{
 		Endpoint: "ws" + strings.TrimPrefix(server.URL, "http") + dashScopeInferencePath,
-		APIKey:   "test-key", Model: QwenASRMessageModel,
-		DisfluencyRemovalEnabled: new(false), KeepDialect: new(true),
-	})
+		APIKey:   "test-key", Model: model, KeepDialect: new(true),
+	}
+	if messageModel {
+		cfg.DisfluencyRemovalEnabled = new(false)
+	} else {
+		cfg.MultiThresholdModeEnabled = true
+		cfg.SpecialWordFilter = "{}"
+		cfg.VocabularyID = "vocab-test"
+	}
+	provider, err := NewDashScopeInferenceRealtimeProvider(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	session, err := NewRealtimeSession(t.Context(), provider, RealtimeSessionConfig{
 		Request: StreamingRequest{
-			SessionID: "message", SampleRate: 16000, Channels: 1, Format: AudioFormatRawPCM16,
+			SessionID: "qwen31", SampleRate: sampleRate, Channels: 1, Format: AudioFormatRawPCM16,
 			Language: "auto", LanguageHints: []string{"zh", "en"},
 			Context: RecognitionContext{Terms: []string{"百炼"}, Messages: []RecognitionContextMessage{
 				{Role: RecognitionContextRoleUser, Text: "前轮问题"},
@@ -118,7 +151,15 @@ func TestDashScopeMessageProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(session.Close)
-	if err := session.Push(t.Context(), AudioChunk{Samples: make([]float32, 1600)}); err != nil {
+	if !messageModel {
+		if provider.StreamingCapabilities().SupportsContextUpdate {
+			t.Fatal("Streaming must not advertise dynamic context")
+		}
+		if err := session.UpdateContext(t.Context(), RecognitionContext{Prompt: "new"}); !errors.Is(err, ErrContextUpdateUnsupported) {
+			t.Fatalf("context error = %v", err)
+		}
+	}
+	if err := session.Push(t.Context(), AudioChunk{Samples: make([]float32, chunkSamples)}); err != nil {
 		t.Fatal(err)
 	}
 	var segments []SegmentResult
@@ -136,7 +177,7 @@ func TestDashScopeMessageProtocol(t *testing.T) {
 			if event.Segment != nil {
 				segments = append(segments, *event.Segment)
 				if event.Segment.State == TranscriptStateStable {
-					if err := session.Push(t.Context(), AudioChunk{Samples: make([]float32, 1600)}); err != nil {
+					if err := session.Push(t.Context(), AudioChunk{Samples: make([]float32, chunkSamples)}); err != nil {
 						t.Fatal(err)
 					}
 					if err := session.Finish(t.Context(), FinalAudioChunk{}); err != nil {
@@ -193,11 +234,40 @@ func TestDashScopeMessageConfigAndContext(t *testing.T) {
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("sample-rate error=%v", err)
 	}
-	input, err := dashScopeMessageInput(RecognitionContext{Messages: []RecognitionContextMessage{
+	input, err := dashScopeDialogueInput(RecognitionContext{Messages: []RecognitionContextMessage{
 		{Role: RecognitionContextRoleUser, Text: strings.Repeat("中", 400)},
 		{Role: RecognitionContextRoleAssistant, Text: "must be truncated"},
 	}}, []string{"latest"})
 	if err != nil || len(input.Context) != 2 || input.Context[1].Content[0].Text != "latest" {
 		t.Fatalf("context=%+v err=%v", input, err)
+	}
+}
+
+func TestDashScopeStreamingConfig(t *testing.T) {
+	t.Parallel()
+	base := DashScopeInferenceRealtimeConfig{
+		Model: QwenASRStreamingModel, Endpoint: "wss://example.com" + dashScopeInferencePath, APIKey: "key",
+	}
+	for _, modify := range []func(*DashScopeInferenceRealtimeConfig){
+		func(c *DashScopeInferenceRealtimeConfig) { c.IntermediateResultEnabled = new(false) },
+		func(c *DashScopeInferenceRealtimeConfig) { c.DisfluencyRemovalEnabled = new(false) },
+		func(c *DashScopeInferenceRealtimeConfig) { c.SemanticPunctuationEnabled = true },
+		func(c *DashScopeInferenceRealtimeConfig) { c.VADModel = "unknown" },
+	} {
+		cfg := base
+		modify(&cfg)
+		if _, err := NewDashScopeInferenceRealtimeProvider(cfg); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("config error=%v", err)
+		}
+	}
+	base.KeepDialect = new(false)
+	base.VADModel = "near_meeting_16k"
+	provider, err := NewDashScopeInferenceRealtimeProvider(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.cfg.IntermediateResultEnabled != nil || *provider.cfg.KeepDialect ||
+		provider.cfg.MaxSentenceSilence != 800*time.Millisecond {
+		t.Fatalf("config=%+v", provider.cfg)
 	}
 }

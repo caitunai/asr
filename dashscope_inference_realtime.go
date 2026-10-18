@@ -85,6 +85,11 @@ type DashScopeInferenceRealtimeProvider struct {
 	dialer websocket.Dialer
 }
 
+// Hide the optional updater when the selected model only documents run-task context.
+type dashScopeInitialContextStream struct {
+	ProviderStream
+}
+
 type dashScopeInferenceStream struct {
 	provider *DashScopeInferenceRealtimeProvider
 	request  StreamingRequest
@@ -257,6 +262,10 @@ func (p *DashScopeInferenceRealtimeProvider) StreamingCapabilities() StreamingCa
 	if p != nil && isQwenMessageModel(p.cfg.Model) {
 		capabilities.SampleRates = []int{16000}
 	}
+	if p != nil && isQwenStreamingModel(p.cfg.Model) {
+		// The supplied Streaming WebSocket contract defines initial context only.
+		capabilities.SupportsContextUpdate = false
+	}
 	return capabilities
 }
 
@@ -271,11 +280,11 @@ func (p *DashScopeInferenceRealtimeProvider) Start(
 	if err != nil {
 		return nil, err
 	}
-	if isQwenMessageModel(p.cfg.Model) {
-		if normalized.SampleRate != 16000 {
+	if isQwen31InferenceModel(p.cfg.Model) {
+		if isQwenMessageModel(p.cfg.Model) && normalized.SampleRate != 16000 {
 			return nil, ErrInvalidRequest
 		}
-		if _, err = dashScopeMessageInput(normalized.Context, nil); err != nil {
+		if _, err = dashScopeDialogueInput(normalized.Context, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -324,6 +333,9 @@ func (p *DashScopeInferenceRealtimeProvider) Start(
 		if err != nil {
 			stream.Close()
 			return nil, err
+		}
+		if isQwenStreamingModel(p.cfg.Model) {
+			return &dashScopeInitialContextStream{ProviderStream: stream}, nil
 		}
 		return stream, nil
 	case <-timer.C:
@@ -392,10 +404,13 @@ func (s *dashScopeInferenceStream) UpdateContext(
 	if s == nil {
 		return ErrSessionClosed
 	}
+	if isQwenStreamingModel(s.provider.cfg.Model) {
+		return ErrContextUpdateUnsupported
+	}
 	input := dashScopeUpdatedInput(update)
 	if isQwenMessageModel(s.provider.cfg.Model) {
 		var err error
-		input, err = dashScopeMessageInput(update.Context, update.StableTranscripts)
+		input, err = dashScopeDialogueInput(update.Context, update.StableTranscripts)
 		if err != nil {
 			return err
 		}
@@ -474,13 +489,13 @@ func (s *dashScopeInferenceStream) sendRunTask(ctx context.Context) error {
 		SpecialWordFilter:          s.provider.cfg.SpecialWordFilter,
 	}
 	input := dashScopeInput(s.request.Context)
-	if isQwenMessageModel(s.provider.cfg.Model) {
+	if isQwen31InferenceModel(s.provider.cfg.Model) {
 		parameters.IntermediateResultEnabled = s.provider.cfg.IntermediateResultEnabled
 		parameters.DisfluencyRemovalEnabled = s.provider.cfg.DisfluencyRemovalEnabled
 		parameters.KeepDialect = s.provider.cfg.KeepDialect
 		parameters.VADModel = s.provider.cfg.VADModel
 		var err error
-		input, err = dashScopeMessageInput(s.request.Context, nil)
+		input, err = dashScopeDialogueInput(s.request.Context, nil)
 		if err != nil {
 			return err
 		}
@@ -578,8 +593,8 @@ func (s *dashScopeInferenceStream) handleResult(sentence *dashScopeSentence) {
 	if sentence == nil || sentence.Heartbeat {
 		return
 	}
-	messageModel := isQwenMessageModel(s.provider.cfg.Model)
-	if messageModel {
+	qwen31Model := isQwen31InferenceModel(s.provider.cfg.Model)
+	if qwen31Model {
 		if sentence.SentenceID <= s.lastFinalSentence {
 			return
 		}
@@ -605,12 +620,12 @@ func (s *dashScopeInferenceStream) handleResult(sentence *dashScopeSentence) {
 		Started:       true,
 		IsFinal:       sentence.SentenceEnd,
 	}
-	if messageModel {
-		// Message-model intermediate text is fully revisable; it has no confirmed prefix.
+	if qwen31Model {
+		// Intermediate sentence text is revisable; the contract guarantees no prefix.
 		if !sentence.SentenceEnd {
 			event.ConfirmedText = ""
 		}
-		event.Sentences = dashScopeMessageSentences(sentence)
+		event.Sentences = dashScopeTranscriptSentences(sentence)
 	}
 	s.emit(event)
 }
@@ -689,7 +704,7 @@ func normalizeDashScopeInferenceRealtimeConfig(
 		cfg.Model = defaultDashScopeInferenceRealtimeModel
 	}
 	var modelErr error
-	cfg, modelErr = normalizeDashScopeMessageConfig(cfg)
+	cfg, modelErr = normalizeDashScopeQwen31Config(cfg)
 	if modelErr != nil {
 		return cfg, modelErr
 	}

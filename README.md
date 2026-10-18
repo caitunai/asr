@@ -174,6 +174,14 @@ Message 的同句中间全文会覆盖上一版，映射为 `preview`；`sentenc
 
 `RecognitionContext.Messages` 支持前轮 user/assistant 对话，分别编码为 user/input_text、assistant/text；`Prompt` 在前，自动识别历史在后，按最后 5 轮、每轮最多 400 个 Unicode 字符裁剪。自动历史本身仍受 `ContextUpdate` 的 4 条/400 字符默认上限约束。`continue-task` 保留同样的角色结构。`SegmentResult.Usage` 是当时的累计用量快照，`EventCompleted.Usage` 是任务结束时的累计用量（含 token）；这些快照不能相加。
 
+### Qwen-Audio-ASR-Streaming（3.1）
+
+同一 Provider 设置 `Model: asr.QwenASRStreamingModel`（`qwen-audio-3.1-asr-flash-streaming`），复用 run-task → task-started → binary PCM → finish-task → task-finished 生命周期。SDK 输入仍为 mono PCM16，按原始采样率发送，不套用 Message 的仅 16kHz 限制，也不自动重采样。服务端支持的压缩格式不在本 SDK 的 PCM 输入接口中直接暴露。
+
+3.1 Streaming 默认句尾静音 800ms、`VADModel="far_field_meeting_16k"`，可设 `near_meeting_16k`，支持 `KeepDialect`、多阈值断句、心跳、语噪阈值、敏感词过滤、最多四种语言提示及两类热词同时发送。它没有 Message 的 `IntermediateResultEnabled`、`DisfluencyRemovalEnabled`，也没有已确认的 `SemanticPunctuationEnabled` 参数；混用会返回 `ErrInvalidConfig`。中间结果保守标记 preview，句尾为 stable，保留句子/词时间戳及累计 token 用量；不从最终事件的 stash 再生成一份识别文本。
+
+初始 `Prompt/Messages` 复用五轮、每轮 400 字符的对话格式。当前用户提供的及官方 WebSocket 客户端事件文档只定义 run-task/finish-task，未给出 continue-task 字段；因此此模型的 `SupportsContextUpdate=false`，stream 不暴露 `ProviderContextUpdater`，自动历史不会发到服务端，显式 UpdateContext 返回 `ErrContextUpdateUnsupported`。这表示 SDK 暂不启用未经确认的能力，不断言服务端永远不支持动态上下文。Message 与原有 3.0 的行为保持不变。
+
 ## Qwen Omni Realtime Provider
 
 `QwenOmniRealtimeProvider` 把 Qwen-Omni-Realtime 会话限制为 ASR-only：只申请 `text` modality，持续发送 16kHz 单声道 PCM，消费 `conversation.item.input_audio_transcription.delta/completed`，并把 partial 映射为 provisional、completed 映射为 stable。server VAD 会自动触发 Omni 的对话响应；Provider 默认在 `response.created` 后立即发送 `response.cancel`，避免把回答混入 ASR 输出。输入结束时会补一小段静音推动尾句完成，并用 `FinishTimeout` 兜底。

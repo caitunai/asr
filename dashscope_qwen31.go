@@ -8,6 +8,7 @@ import (
 
 const (
 	QwenASRMessageModel       = "qwen-audio-3.1-asr-flash-message"
+	QwenASRStreamingModel     = "qwen-audio-3.1-asr-flash-streaming"
 	defaultQwenMessageSilence = 800 * time.Millisecond
 	defaultQwenMessageVAD     = "far_field_meeting_16k"
 )
@@ -16,17 +17,27 @@ func isQwenMessageModel(model string) bool {
 	return model == QwenASRMessageModel || strings.HasPrefix(model, QwenASRMessageModel+"-")
 }
 
-func normalizeDashScopeMessageConfig(cfg DashScopeInferenceRealtimeConfig) (DashScopeInferenceRealtimeConfig, error) {
+func isQwenStreamingModel(model string) bool {
+	return model == QwenASRStreamingModel || strings.HasPrefix(model, QwenASRStreamingModel+"-")
+}
+
+func isQwen31InferenceModel(model string) bool {
+	return isQwenMessageModel(model) || isQwenStreamingModel(model)
+}
+
+func normalizeDashScopeQwen31Config(cfg DashScopeInferenceRealtimeConfig) (DashScopeInferenceRealtimeConfig, error) {
 	cfg.VADModel = strings.TrimSpace(cfg.VADModel)
-	if !isQwenMessageModel(cfg.Model) {
+	if !isQwen31InferenceModel(cfg.Model) {
 		if cfg.IntermediateResultEnabled != nil || cfg.DisfluencyRemovalEnabled != nil ||
 			cfg.KeepDialect != nil || cfg.VADModel != "" {
 			return cfg, ErrInvalidConfig
 		}
 		return cfg, nil
 	}
-	// These options belong to the older Streaming protocol, not Message.
-	if cfg.SemanticPunctuationEnabled || cfg.MultiThresholdModeEnabled || strings.TrimSpace(cfg.SpecialWordFilter) != "" {
+	messageModel := isQwenMessageModel(cfg.Model)
+	if cfg.SemanticPunctuationEnabled ||
+		(messageModel && (cfg.MultiThresholdModeEnabled || strings.TrimSpace(cfg.SpecialWordFilter) != "")) ||
+		(!messageModel && (cfg.IntermediateResultEnabled != nil || cfg.DisfluencyRemovalEnabled != nil)) {
 		return cfg, ErrInvalidConfig
 	}
 	if cfg.MaxSentenceSilence == 0 {
@@ -38,7 +49,7 @@ func normalizeDashScopeMessageConfig(cfg DashScopeInferenceRealtimeConfig) (Dash
 	if cfg.VADModel != defaultQwenMessageVAD && cfg.VADModel != "near_meeting_16k" {
 		return cfg, ErrInvalidConfig
 	}
-	if cfg.IntermediateResultEnabled == nil {
+	if messageModel && cfg.IntermediateResultEnabled == nil {
 		// The service defaults to final-only; the SDK enables previews by default.
 		cfg.IntermediateResultEnabled = new(true)
 	} else {
@@ -49,7 +60,7 @@ func normalizeDashScopeMessageConfig(cfg DashScopeInferenceRealtimeConfig) (Dash
 	return cfg, nil
 }
 
-func dashScopeMessageInput(value RecognitionContext, history []string) (dashScopeTaskInput, error) {
+func dashScopeDialogueInput(value RecognitionContext, history []string) (dashScopeTaskInput, error) {
 	messages := make([]RecognitionContextMessage, 0, len(value.Messages)+len(history)+1)
 	if prompt := strings.TrimSpace(value.Prompt); prompt != "" {
 		messages = append(messages, RecognitionContextMessage{Role: RecognitionContextRoleUser, Text: prompt})
@@ -83,7 +94,7 @@ func dashScopeMessageInput(value RecognitionContext, history []string) (dashScop
 	return input, nil
 }
 
-func dashScopeMessageSentences(sentence *dashScopeSentence) []TranscriptSentence {
+func dashScopeTranscriptSentences(sentence *dashScopeSentence) []TranscriptSentence {
 	words := make([]SentenceWord, 0, len(sentence.Words))
 	for _, word := range sentence.Words {
 		words = append(words, SentenceWord{
