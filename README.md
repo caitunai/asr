@@ -166,6 +166,14 @@ session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
 
 该 Provider 实现可选的 `ProviderContextUpdater`。`RealtimeSession` 默认把最近 4 条 provider-final stable 文本保存在最多 400 个 Unicode 字符的有界历史中；收到 stable 后不会阻塞结果输出，而是在发送下一块音频前先发送 `continue-task`，上下文包含初始 `Prompt` 和最近识别结果。同一连接的写锁保证 context update 先于后续 PCM，协议没有不存在的确认事件等待。可通过 `RealtimeSessionConfig.ContextUpdate.DisableAutomatic=true` 关闭，或使用 `MaxHistoryItems`、`MaxHistoryRunes` 调整 SDK 历史上限；DashScope 最终仍按最多 5 条 input_text、总计 400 字符收口。需要由应用主动替换 Prompt 时，可对 `RealtimeSession`（或 `AudioSessionContextUpdater`）调用 `UpdateContext`；显式更新即使关闭自动历史也仍然可用。
 
+### Qwen-Audio-3.1-ASR-Flash-Message
+
+使用相同 Provider，设置 `Model: asr.QwenASRMessageModel`（`qwen-audio-3.1-asr-flash-message`）。只接受 **16kHz 单声道 PCM16**；无需输入侧 VAD，不重复重采样。SDK 默认开启 `IntermediateResultEnabled`，句尾静音默认 800ms，`VADModel` 默认 `far_field_meeting_16k`，也可选 `near_meeting_16k`。设置 `IntermediateResultEnabled: new(false)` 可仅接收最终结果；`DisfluencyRemovalEnabled` 和 `KeepDialect` 是可选 bool 指针，未设置时使用服务端默认 false。3.0 的语义断句、多阈值和敏感词过滤参数不适用于 Message，混用会返回配置错误。
+
+Message 的同句中间全文会覆盖上一版，映射为 `preview`；`sentence_end=true` 映射为 `stable`，不使用 HTTP 相邻窗口等待，也不把未确认词标为 provisional。心跳、空起句事件及已结束句子的重复/迟到更新不会产生新文本。`SegmentResult.Sentences` 保留句子及词的时间信息（相对整个流，单位秒）和词级 `Fixed`。此实时接口没有配置说话人分离，不能照搬 HTTP 3.1 的 diarization 参数。
+
+`RecognitionContext.Messages` 支持前轮 user/assistant 对话，分别编码为 user/input_text、assistant/text；`Prompt` 在前，自动识别历史在后，按最后 5 轮、每轮最多 400 个 Unicode 字符裁剪。自动历史本身仍受 `ContextUpdate` 的 4 条/400 字符默认上限约束。`continue-task` 保留同样的角色结构。`SegmentResult.Usage` 是当时的累计用量快照，`EventCompleted.Usage` 是任务结束时的累计用量（含 token）；这些快照不能相加。
+
 ## Qwen Omni Realtime Provider
 
 `QwenOmniRealtimeProvider` 把 Qwen-Omni-Realtime 会话限制为 ASR-only：只申请 `text` modality，持续发送 16kHz 单声道 PCM，消费 `conversation.item.input_audio_transcription.delta/completed`，并把 partial 映射为 provisional、completed 映射为 stable。server VAD 会自动触发 Omni 的对话响应；Provider 默认在 `response.created` 后立即发送 `response.cancel`，避免把回答混入 ASR 输出。输入结束时会补一小段静音推动尾句完成，并用 `FinishTimeout` 兜底。

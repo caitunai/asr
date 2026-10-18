@@ -124,7 +124,8 @@ type ProviderResult struct {
 }
 
 // TranscriptSentence retains provider sentence details. Times are seconds
-// relative to the submitted audio window; speaker IDs are local to that request.
+// relative to the submitted audio window, or to stream start for realtime
+// results; speaker IDs are local to that request.
 type TranscriptSentence struct {
 	ID        int            `json:"id"`
 	Text      string         `json:"text"`
@@ -205,7 +206,7 @@ type SegmentResult struct {
 	Text               string             `json:"text"`
 	FinalizationReason FinalizationReason `json:"finalization_reason,omitempty"`
 	EvidenceQuality    EvidenceQuality    `json:"evidence_quality,omitempty"`
-	// Provider details are available for single_segment direct results only;
+	// Provider details are available for direct and realtime results;
 	// contextual alignment publishes them on the source WindowResult instead.
 	Sentences []TranscriptSentence `json:"sentences,omitempty"`
 	Usage     *RecognitionUsage    `json:"usage,omitempty"`
@@ -272,4 +273,5 @@ type Event struct {
 	Window        *WindowResult       `json:"window,omitempty"`
 	RevisionBatch *RevisionBatch      `json:"revision_batch,omitempty"`
 	Error         *EventError         `json:"error,omitempty"`
+	Usage         *RecognitionUsage   `json:"usage,omitempty"`
 }

@@ -55,6 +55,9 @@ type ProviderStreamEvent struct {
 	Started          bool
 	IsFinal          bool
 	Discarded        bool
+	Sentences        []TranscriptSentence
+	// Usage is a cumulative snapshot for this task, not a per-event delta.
+	Usage *RecognitionUsage
 }
 
 // StreamingProvider creates one persistent provider-side ASR stream. It does

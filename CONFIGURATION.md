@@ -249,7 +249,11 @@ apiKey="..."
 | `asr.providers.qwenInferenceRealtime.vocabularyID` | string | 空 | 否 | 预编译热词列表 ID；存在会话 Terms 时即时 vocabulary 优先生效。 |
 | `asr.providers.qwenInferenceRealtime.vocabularyWeight` | int | 5 | 否 | 会话 Terms 的即时热词权重，支持 1–5 或 50；权重 50 时最多发送 50 个。 |
 | `asr.providers.qwenInferenceRealtime.semanticPunctuationEnabled` | bool | false | 否 | true 使用语义断句，false 使用供应商 VAD 断句。 |
-| `asr.providers.qwenInferenceRealtime.maxSentenceSilenceMs` | duration/ms | 1300ms | 否 | VAD 句尾静音，范围 200ms–6s。 |
+| `asr.providers.qwenInferenceRealtime.maxSentenceSilenceMs` | duration/ms | 3.0: 1300ms；3.1 Message: 800ms | 否 | VAD 句尾静音，范围 200ms–6s。 |
+| `asr.providers.qwenInferenceRealtime.intermediateResultEnabled` | bool | true | 否 | 仅 3.1 Message；SDK 默认启用 preview（服务端自身默认 false），显式 false 仅最终结果。 |
+| `asr.providers.qwenInferenceRealtime.disfluencyRemovalEnabled` | bool | 服务端 false | 否 | 仅 3.1 Message；去除语气词、重复等不流畅表达。 |
+| `asr.providers.qwenInferenceRealtime.keepDialect` | bool | 服务端 false | 否 | 仅 3.1 Message；保留方言表达，只作用于最终结果。 |
+| `asr.providers.qwenInferenceRealtime.vadModel` | string | `far_field_meeting_16k` | 否 | 仅 3.1 Message；可选 `near_meeting_16k`。 |
 | `asr.providers.qwenInferenceRealtime.multiThresholdModeEnabled` | bool | false | 否 | VAD 模式下启用多阈值，避免单句过长。语义断句时不生效。 |
 | `asr.providers.qwenInferenceRealtime.heartbeat` | bool | false | 否 | 持续静音时启用供应商心跳；心跳结果不会发布为文本。 |
 | `asr.providers.qwenInferenceRealtime.speechNoiseThreshold` | float | 供应商默认 | 否 | 语音/噪声阈值，范围 -1–1。 |
@@ -500,6 +504,14 @@ Provider 只接受单声道 raw PCM16；采样率在 `run-task.payload.parameter
 显式语言及 language hints 会转换为供应商支持的主语言代码，最多四种；显式语言优先。`RecognitionContext.Prompt` 映射为单条 user/input_text context，并按供应商限制截断至 400 个 Unicode 字符。`result-generated` 中同一个 `sentence_id` 的非句尾结果产生 provisional 修订，`sentence_end=true` 产生 stable；heartbeat 不会输出文本。CloseInput 发送 `finish-task`，会话只在收到 `task-finished` 后完成，或由 `FinishTimeout` 终止。
 
 Provider 同时实现 `ProviderContextUpdater.UpdateContext`，将统一的 `StreamingContextUpdate` 映射为 `continue-task`。`RealtimeSession` 默认自动保存最近 4 条 provider-final stable 结果、最多 400 个 Unicode 字符；下一块 PCM 写入前若上下文有更新，会先同步写入 `continue-task`。供应商没有 `task-continued` 响应事件，因此 SDK 只等待 WebSocket 写入完成，不增加虚假的确认等待。可通过 `RealtimeSessionConfig.ContextUpdate` 禁用或调整有界历史；partial/provisional、discarded 和错误结果不会进入上下文。应用也可通过 `AudioSessionContextUpdater.UpdateContext` 主动替换当前 Prompt；显式更新不受 `DisableAutomatic` 影响，Terms 仍只能在 `run-task` 时设置。
+
+### 3.1 Message 模型差异
+
+配置 `asr.provider="qwenInferenceRealtime"` 和 `asr.providers.qwenInferenceRealtime.model="qwen-audio-3.1-asr-flash-message"`；endpoint、apiKey 与 3.0 共用，SDK 默认模型仍为 3.0，示例配置显式选用 3.1。Message 只接受 16kHz mono PCM16。上述 `IntermediateResultEnabled`、`DisfluencyRemovalEnabled`、`KeepDialect` 为可选 bool 指针；`VADModel` 为 string。设置 3.0 专用 `SemanticPunctuationEnabled=true`、`MultiThresholdModeEnabled=true` 或非空 `SpecialWordFilter` 会拒绝配置，不会偷偷发送无效参数。
+
+中间结果为同句全文修订 `preview`，句尾为 `stable`；不开启 HTTP 相邻窗口确认。重复 final、迟到的同句 partial、空起句和心跳被忽略。`SegmentResult.Sentences` 返回流内绝对秒时间戳及词级 fixed 信息，不声明说话人分离支持。语言提示最多 4 种、只影响最终结果。
+
+初始和动态上下文支持 `RecognitionContext.Messages` 的 user/assistant 轮次；最多保留最后 5 轮，每轮 user+assistant 合计 400 Unicode 字符。Prompt 作为第一条 user 消息，自动 stable 历史追加在后。上表 `contextHistoryItems/contextHistoryRunes` 仍限制自动历史自身，但 Message 的 Provider 限制是每轮 400 字符，而非所有轮次合计 400。`SegmentResult.Usage` 和 `EventCompleted.Usage` 都是累计快照，禁止求和；后者含任务结束时的最终 token 用量。
 
 ## `QwenOmniRealtimeConfig`
 

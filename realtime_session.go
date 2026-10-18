@@ -357,7 +357,11 @@ func (s *RealtimeSession) run(ctx context.Context) {
 	})
 
 	emittedError := false
+	var usage *RecognitionUsage
 	for providerEvent := range s.stream.Events() {
+		if providerEvent.Usage != nil {
+			usage = cloneRecognitionUsage(providerEvent.Usage)
+		}
 		if providerEvent.Err != nil {
 			emittedError = true
 			s.emitProviderError(providerEvent)
@@ -367,6 +371,7 @@ func (s *RealtimeSession) run(ctx context.Context) {
 			s.discardTranscript(providerEvent)
 			continue
 		}
+		providerEvent.Usage = usage
 		s.emitTranscript(providerEvent)
 	}
 	waitErr := s.stream.Wait(context.WithoutCancel(ctx))
@@ -378,6 +383,7 @@ func (s *RealtimeSession) run(ctx context.Context) {
 	}
 	s.emit(Event{
 		Type:      EventCompleted,
+		Usage:     usage,
 		SessionID: s.cfg.Request.SessionID,
 		Provider:  s.provider.Name(),
 		Model:     s.provider.Model(),
@@ -428,6 +434,8 @@ func (s *RealtimeSession) emitTranscript(providerEvent ProviderStreamEvent) {
 		Revision:     state.revision,
 		State:        stability,
 		Text:         text,
+		Sentences:    cloneTranscriptSentences(providerEvent.Sentences),
+		Usage:        cloneRecognitionUsage(providerEvent.Usage),
 	}
 	if providerEvent.IsFinal {
 		result.FinalizationReason = FinalizationProviderFinal

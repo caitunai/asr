@@ -74,6 +74,10 @@ type DashScopeInferenceRealtimeConfig struct {
 	FinishTimeout              time.Duration
 	EventBuffer                int
 	AllowInsecureWebSocket     bool
+	IntermediateResultEnabled  *bool
+	DisfluencyRemovalEnabled   *bool
+	KeepDialect                *bool
+	VADModel                   string
 }
 
 type DashScopeInferenceRealtimeProvider struct {
@@ -100,11 +104,12 @@ type dashScopeInferenceStream struct {
 	startedOnce sync.Once
 	finishTimer sync.Once
 
-	writeClosed   bool
-	expectedSeq   uint64
-	nextSample    int64
-	waitErr       error
-	waitResultSet bool
+	writeClosed       bool
+	expectedSeq       uint64
+	nextSample        int64
+	waitErr           error
+	waitResultSet     bool
+	lastFinalSentence int
 }
 
 type dashScopeTaskHeader struct {
@@ -142,6 +147,10 @@ type dashScopeTaskParameters struct {
 	Heartbeat                  bool           `json:"heartbeat,omitempty"`
 	SpeechNoiseThreshold       *float64       `json:"speech_noise_threshold,omitempty"`
 	SpecialWordFilter          string         `json:"special_word_filter,omitempty"`
+	IntermediateResultEnabled  *bool          `json:"intermediate_result_enabled,omitempty"`
+	DisfluencyRemovalEnabled   *bool          `json:"disfluency_removal_enabled,omitempty"`
+	KeepDialect                *bool          `json:"keep_dialect,omitempty"`
+	VADModel                   string         `json:"vad_model,omitempty"`
 }
 
 type dashScopeTaskInput struct {
@@ -165,6 +174,7 @@ type dashScopeServerEvent struct {
 
 type dashScopeServerPayload struct {
 	Output dashScopeServerOutput `json:"output"`
+	Usage  *RecognitionUsage     `json:"usage,omitempty"`
 }
 
 type dashScopeServerOutput struct {
@@ -186,6 +196,7 @@ type dashScopeWord struct {
 	EndTime     int64  `json:"end_time"`
 	Text        string `json:"text"`
 	Punctuation string `json:"punctuation"`
+	Fixed       bool   `json:"fixed"`
 }
 
 type dashScopeProviderError struct {
@@ -207,9 +218,11 @@ func NewDashScopeInferenceRealtimeProvider(
 	if err != nil {
 		return nil, err
 	}
+	dialer := *websocket.DefaultDialer
+	dialer.HandshakeTimeout = normalized.HandshakeTimeout
 	return &DashScopeInferenceRealtimeProvider{
 		cfg:    normalized,
-		dialer: *websocket.DefaultDialer,
+		dialer: dialer,
 	}, nil
 }
 
@@ -232,7 +245,7 @@ func (p *DashScopeInferenceRealtimeProvider) ServerVADEnabled() bool {
 }
 
 func (p *DashScopeInferenceRealtimeProvider) StreamingCapabilities() StreamingCapabilities {
-	return StreamingCapabilities{
+	capabilities := StreamingCapabilities{
 		Formats:               []AudioFormat{AudioFormatRawPCM16},
 		SampleRates:           []int{8000, 16000, 22050, 24000, 32000, 44100, 48000},
 		SupportsPrompt:        true,
@@ -241,6 +254,10 @@ func (p *DashScopeInferenceRealtimeProvider) StreamingCapabilities() StreamingCa
 		SupportsServerVAD:     true,
 		SupportsContextUpdate: true,
 	}
+	if p != nil && isQwenMessageModel(p.cfg.Model) {
+		capabilities.SampleRates = []int{16000}
+	}
+	return capabilities
 }
 
 func (p *DashScopeInferenceRealtimeProvider) Start(
@@ -253,6 +270,14 @@ func (p *DashScopeInferenceRealtimeProvider) Start(
 	normalized, err := normalizeDashScopeInferenceRequest(request)
 	if err != nil {
 		return nil, err
+	}
+	if isQwenMessageModel(p.cfg.Model) {
+		if normalized.SampleRate != 16000 {
+			return nil, ErrInvalidRequest
+		}
+		if _, err = dashScopeMessageInput(normalized.Context, nil); err != nil {
+			return nil, err
+		}
 	}
 	taskID, err := newDashScopeTaskID()
 	if err != nil {
@@ -315,13 +340,13 @@ func (s *dashScopeInferenceStream) WriteAudio(ctx context.Context, chunk Streami
 	if s == nil {
 		return ErrSessionClosed
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if len(chunk.Data) == 0 || len(chunk.Data)%2 != 0 || chunk.Sequence != s.expectedSeq ||
 		chunk.StartSample != s.nextSample || chunk.EndSample <= chunk.StartSample ||
 		chunk.EndSample-chunk.StartSample != int64(len(chunk.Data)/2) {
 		return ErrInvalidRequest
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	if s.writeClosed {
 		return ErrSessionClosed
 	}
@@ -368,6 +393,13 @@ func (s *dashScopeInferenceStream) UpdateContext(
 		return ErrSessionClosed
 	}
 	input := dashScopeUpdatedInput(update)
+	if isQwenMessageModel(s.provider.cfg.Model) {
+		var err error
+		input, err = dashScopeMessageInput(update.Context, update.StableTranscripts)
+		if err != nil {
+			return err
+		}
+	}
 	if len(input.Context) == 0 {
 		return ErrInvalidRequest
 	}
@@ -441,6 +473,18 @@ func (s *dashScopeInferenceStream) sendRunTask(ctx context.Context) error {
 		SpeechNoiseThreshold:       s.provider.cfg.SpeechNoiseThreshold,
 		SpecialWordFilter:          s.provider.cfg.SpecialWordFilter,
 	}
+	input := dashScopeInput(s.request.Context)
+	if isQwenMessageModel(s.provider.cfg.Model) {
+		parameters.IntermediateResultEnabled = s.provider.cfg.IntermediateResultEnabled
+		parameters.DisfluencyRemovalEnabled = s.provider.cfg.DisfluencyRemovalEnabled
+		parameters.KeepDialect = s.provider.cfg.KeepDialect
+		parameters.VADModel = s.provider.cfg.VADModel
+		var err error
+		input, err = dashScopeMessageInput(s.request.Context, nil)
+		if err != nil {
+			return err
+		}
+	}
 	event := dashScopeClientEvent{
 		Header: dashScopeTaskHeader{
 			Action:    dashScopeActionRunTask,
@@ -453,7 +497,7 @@ func (s *dashScopeInferenceStream) sendRunTask(ctx context.Context) error {
 			Function:   dashScopeFunctionRecognition,
 			Model:      s.provider.cfg.Model,
 			Parameters: parameters,
-			Input:      dashScopeInput(s.request.Context),
+			Input:      input,
 		},
 	}
 	s.writeMu.Lock()
@@ -512,8 +556,14 @@ func (s *dashScopeInferenceStream) handleEvent(event dashScopeServerEvent) {
 	case dashScopeEventTaskStarted:
 		s.signalStarted(nil)
 	case dashScopeEventResultGenerated:
+		if event.Payload.Usage != nil {
+			s.emit(ProviderStreamEvent{Usage: cloneRecognitionUsage(event.Payload.Usage)})
+		}
 		s.handleResult(event.Payload.Output.Sentence)
 	case dashScopeEventTaskFinished:
+		if event.Payload.Usage != nil {
+			s.emit(ProviderStreamEvent{Usage: cloneRecognitionUsage(event.Payload.Usage)})
+		}
 		s.setWaitResult(nil)
 		s.signalStarted(nil)
 	case dashScopeEventTaskFailed:
@@ -527,6 +577,15 @@ func (s *dashScopeInferenceStream) handleEvent(event dashScopeServerEvent) {
 func (s *dashScopeInferenceStream) handleResult(sentence *dashScopeSentence) {
 	if sentence == nil || sentence.Heartbeat {
 		return
+	}
+	messageModel := isQwenMessageModel(s.provider.cfg.Model)
+	if messageModel {
+		if sentence.SentenceID <= s.lastFinalSentence {
+			return
+		}
+		if sentence.SentenceEnd {
+			s.lastFinalSentence = sentence.SentenceID
+		}
 	}
 	resultID := "sentence-" + strconv.Itoa(sentence.SentenceID)
 	text := strings.TrimSpace(sentence.Text)
@@ -545,6 +604,13 @@ func (s *dashScopeInferenceStream) handleResult(sentence *dashScopeSentence) {
 		EndAt:         time.Duration(max(int64(0), sentence.EndTime)) * time.Millisecond,
 		Started:       true,
 		IsFinal:       sentence.SentenceEnd,
+	}
+	if messageModel {
+		// Message-model intermediate text is fully revisable; it has no confirmed prefix.
+		if !sentence.SentenceEnd {
+			event.ConfirmedText = ""
+		}
+		event.Sentences = dashScopeMessageSentences(sentence)
 	}
 	s.emit(event)
 }
@@ -621,6 +687,11 @@ func normalizeDashScopeInferenceRealtimeConfig(
 	cfg.Model = strings.TrimSpace(cfg.Model)
 	if cfg.Model == "" {
 		cfg.Model = defaultDashScopeInferenceRealtimeModel
+	}
+	var modelErr error
+	cfg, modelErr = normalizeDashScopeMessageConfig(cfg)
+	if modelErr != nil {
+		return cfg, modelErr
 	}
 	cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
 	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
