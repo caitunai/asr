@@ -17,6 +17,9 @@ type StreamingCapabilities struct {
 }
 
 type StreamingRequest struct {
+	// ReadTimeout bounds transport silence, including absent pong replies.
+	// Zero uses 45s; negative disables the transport heartbeat watchdog.
+	ReadTimeout   time.Duration
 	SessionID     string
 	Language      string
 	LanguageHints []string
@@ -43,6 +46,7 @@ type StreamingContextUpdate struct {
 }
 
 type ProviderStreamEvent struct {
+	Recovery         *RecoveryInfo
 	Err              error
 	ResultID         string
 	Text             string

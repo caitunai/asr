@@ -261,6 +261,8 @@ func (p *jsonAudioHTTPProvider) Capabilities() Capabilities {
 }
 
 func (p *jsonAudioHTTPProvider) Transcribe(ctx context.Context, request ProviderRequest) (ProviderResult, error) {
+	ctx, cancel := httpRequestContext(ctx)
+	defer cancel()
 	if p == nil || p.client == nil || ctx == nil || request.RequestID == "" ||
 		len(request.Audio.Data) == 0 || request.Audio.Format != AudioFormatWAVPCM16 ||
 		request.Audio.SampleRate <= 0 || request.Audio.Channels != 1 {

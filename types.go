@@ -254,11 +254,12 @@ type WindowResult struct {
 }
 
 type EventError struct {
-	Code         string `json:"code"`
-	Message      string `json:"message"`
-	RequestID    string `json:"request_id,omitempty"`
-	SegmentIndex int    `json:"segment_index,omitempty"`
-	Final        bool   `json:"final"`
+	Recovery     *RecoveryInfo `json:"recovery,omitempty"`
+	Code         string        `json:"code"`
+	Message      string        `json:"message"`
+	RequestID    string        `json:"request_id,omitempty"`
+	SegmentIndex int           `json:"segment_index,omitempty"`
+	Final        bool          `json:"final"`
 }
 
 type Event struct {

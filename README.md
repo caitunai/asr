@@ -162,7 +162,9 @@ session, err := asr.NewRealtimeSession(ctx, provider, asr.RealtimeSessionConfig{
 })
 ```
 
-`Prompt` 作为一条 `user/input_text` 上下文发送，按协议限制为最多 400 个 Unicode 字符；`Terms` 去重后映射成即时 `vocabulary`，权重默认 5，可配置为 1–5 或超级热词权重 50。明确 `Language` 时优先发送它，否则发送最多四个 `LanguageHints`，区域 tag 会转换为主语言代码。心跳 sentence 被忽略；同一 `sentence_id` 的 partial 会修订同一 provisional，空 final 会撤回已有 partial。Adapter 不发送数据合规检测 header，也不执行自动断线重连。
+`Prompt` 作为一条 `user/input_text` 上下文发送，按协议限制为最多 400 个 Unicode 字符；`Terms` 去重后映射成即时 `vocabulary`，权重默认 5，可配置为 1–5 或超级热词权重 50。明确 `Language` 时优先发送它，否则发送最多四个 `LanguageHints`，区域 tag 会转换为主语言代码。心跳 sentence 被忽略；同一 `sentence_id` 的 partial 会修订同一 provisional，空 final 会撤回已有 partial。Adapter 不发送数据合规检测 header。通用重连由 `RealtimeSessionConfig.Recovery` 可选启用，不在 adapter 内重复实现。
+
+HTTP Client 的 RequestTimeout 同时覆盖并发排队、请求和有限重试。实时 SDK 可设置 `Recovery: &asr.RealtimeRecoveryConfig{}` 开启有界 PCM 缓存、心跳检测和断线重放；nil 保持直接写入。默认最多 3 次重连，连接 10s、操作 5s、无数据/pong 45s、结束总等待 20s、未确认音频缓存 120s。缓存满明确报错，不静默丢音频。重放可能产生重复文本及额外费用；缺少 final 时间戳时不能安全清理缓存，即使已有 stable，长会话也可能达到上限。详见 [配置与恢复语义](CONFIGURATION.md#通用超时和实时断线恢复)。
 
 该 Provider 实现可选的 `ProviderContextUpdater`。`RealtimeSession` 默认把最近 4 条 provider-final stable 文本保存在最多 400 个 Unicode 字符的有界历史中；收到 stable 后不会阻塞结果输出，而是在发送下一块音频前先发送 `continue-task`，上下文包含初始 `Prompt` 和最近识别结果。同一连接的写锁保证 context update 先于后续 PCM，协议没有不存在的确认事件等待。可通过 `RealtimeSessionConfig.ContextUpdate.DisableAutomatic=true` 关闭，或使用 `MaxHistoryItems`、`MaxHistoryRunes` 调整 SDK 历史上限；DashScope 最终仍按最多 5 条 input_text、总计 400 字符收口。需要由应用主动替换 Prompt 时，可对 `RealtimeSession`（或 `AudioSessionContextUpdater`）调用 `UpdateContext`；显式更新即使关闭自动历史也仍然可用。
 

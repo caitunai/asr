@@ -78,11 +78,13 @@ func (c *Client) Transcribe(ctx context.Context, request TranscriptionRequest) (
 	if err != nil {
 		return TranscriptionResult{}, err
 	}
+	requestCtx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer cancel()
 	select {
 	case c.semaphore <- struct{}{}:
 		defer func() { <-c.semaphore }()
-	case <-ctx.Done():
-		return TranscriptionResult{}, errors.Join(ErrOverloaded, ctx.Err())
+	case <-requestCtx.Done():
+		return TranscriptionResult{}, errors.Join(ErrOverloaded, ErrRequestTimeout, requestCtx.Err())
 	}
 
 	audio, err := EncodeAudio(request.Samples, request.SampleRate, request.Channels, c.cfg.AudioFormat)
@@ -98,10 +100,11 @@ func (c *Client) Transcribe(ctx context.Context, request TranscriptionRequest) (
 		Audio:         audio,
 	}
 
-	requestCtx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer cancel()
 	var result ProviderResult
 	for attempt := 0; attempt <= c.cfg.RetryCount; attempt++ {
+		if requestCtx.Err() != nil {
+			break
+		}
 		result, err = c.provider.Transcribe(requestCtx, providerRequest)
 		if err == nil {
 			return TranscriptionResult{ProviderResult: result, RequestID: request.RequestID}, nil

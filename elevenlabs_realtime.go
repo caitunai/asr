@@ -171,7 +171,7 @@ func NewElevenLabsRealtimeProvider(cfg ElevenLabsRealtimeConfig) (*ElevenLabsRea
 	if err != nil {
 		return nil, err
 	}
-	return &ElevenLabsRealtimeProvider{cfg: normalized, dialer: *websocket.DefaultDialer}, nil
+	return &ElevenLabsRealtimeProvider{cfg: normalized, dialer: realtimeDialer(normalized.HandshakeTimeout)}, nil
 }
 
 func (p *ElevenLabsRealtimeProvider) Name() string { return p.cfg.Name }
@@ -384,6 +384,7 @@ func (s *elevenLabsRealtimeStream) writeEvent(ctx context.Context, event map[str
 func (s *elevenLabsRealtimeStream) readLoop() {
 	realtimeJSONReadLoop[elevenLabsServerEvent]{
 		ctx:              s.ctx,
+		readTimeout:      s.request.ReadTimeout,
 		conn:             s.conn,
 		cancel:           s.cancel,
 		events:           s.events,

@@ -157,7 +157,7 @@ func NewQwenRealtimeProvider(cfg QwenRealtimeConfig) (*QwenRealtimeProvider, err
 	}
 	return &QwenRealtimeProvider{
 		cfg:    normalized,
-		dialer: *websocket.DefaultDialer,
+		dialer: realtimeDialer(normalized.HandshakeTimeout),
 	}, nil
 }
 
@@ -468,8 +468,10 @@ func (s *qwenRealtimeStream) readLoop() {
 	defer func() { _ = s.conn.Close() }()
 	defer close(s.events)
 	defer close(s.done)
+	stopHeartbeat := startRealtimeHeartbeat(s.ctx, s.conn, s.request.ReadTimeout)
+	defer stopHeartbeat()
 	for {
-		_, payload, err := s.conn.ReadMessage()
+		_, payload, err := readRealtimeMessage(s.conn, s.request.ReadTimeout)
 		if err != nil {
 			if !s.hasWaitResult() {
 				if s.ctx.Err() != nil {

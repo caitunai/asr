@@ -425,6 +425,7 @@ func (s *inworldRealtimeStream) writeEvent(ctx context.Context, event inworldCli
 func (s *inworldRealtimeStream) readLoop() {
 	realtimeJSONReadLoop[inworldServerEvent]{
 		ctx:               s.ctx,
+		readTimeout:       s.request.ReadTimeout,
 		conn:              s.conn,
 		cancel:            s.cancel,
 		events:            s.events,
@@ -527,7 +528,8 @@ func (s *inworldRealtimeStream) currentResultLocked() (string, bool) {
 }
 
 func (s *inworldRealtimeStream) classifyReadError(err error) error {
-	if s.isClosing() && websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+	closeErr, closed := errors.AsType[*websocket.CloseError](err)
+	if s.isClosing() && closed && closeErr.Code == websocket.CloseNormalClosure {
 		return nil
 	}
 	if s.ctx.Err() != nil {

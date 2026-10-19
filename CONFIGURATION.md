@@ -188,7 +188,7 @@ apiKey="..."
 | `asr.provider` | string | `generic` | 否 | `generic`、`microsoft`、`qwenHTTP`、`chatCompletions`、`qwenRealtime`、`qwenInferenceRealtime`、`qwenOmniRealtime`、`openaiRealtime`、`geminiRealtime`、`elevenLabsRealtime`、`inworldRealtime` 或 `vllmRealtime`。一个输入会话固定使用其中一个 provider。 |
 | `asr.segmentStrategy` | string | `contextual` | 否 | HTTP 分段 provider 的识别策略。`contextual` 使用短静音 preview、邻接双窗口和对齐；`single_segment` 对每个正式 VAD/超长语音安全 Segment 只创建一个识别任务并直接 stable。实时 provider 忽略该项。 |
 | `asr.defaultLanguage` | string | `auto` | 否 | 会话未指定语言时的 BCP 47 tag 或自动检测 sentinel。 |
-| `asr.requestTimeout` | duration string | generic `8s`；microsoft `20s`；qwenHTTP/chatCompletions `30s` | 否 | 单次 provider HTTP 请求超时。 |
+| `asr.requestTimeout` | duration string | generic `8s`；microsoft `20s`；qwenHTTP/chatCompletions `30s` | 否 | 一次转写的总预算，覆盖并发排队、编码、HTTP 请求/响应读取及有限重试。 |
 | `asr.retryCount` | int | 1 | 否 | 同一 provider 的可恢复错误重试次数；当前只允许 0 或 1。 |
 | `asr.maxConcurrency` | int | 16 | 否 | 全局 ASR client 并发上限；单会话 scheduler 仍保持一个 active。 |
 | `asr.contextSilenceMs` | duration/ms | 200ms | 否 | 拼接两个有间隔 VAD segment 时插入的静音。时间连续时不插入。 |
@@ -436,7 +436,7 @@ Provider 只接受 16kHz mono WAV PCM16，并拒绝超过 60 秒的 payload。�
 
 | 字段 | SDK 默认值 | 应用默认值 | 作用 |
 |---|---:|---:|---|
-| `RequestTimeout` | 8s | 8s | 一次转写请求及有限重试共享的 deadline。 |
+| `RequestTimeout` | 8s | 8s | 并发排队、编码、转写请求及有限重试共享的 deadline。 |
 | `RetryCount` | 0 | 1 | 可恢复错误重试次数，只允许 0 或 1。 |
 | `MaxConcurrency` | 16 | 16 | client 全局并发 semaphore 容量。 |
 | `AudioFormat` | WAV PCM16 | WAV PCM16 | float32 PCM 编码后的 provider payload 格式，必须在 provider capabilities 中。 |
@@ -491,7 +491,33 @@ Provider 只接受 16kHz mono WAV PCM16，并拒绝超过 60 秒的 payload。�
 
 ## `QwenRealtimeConfig` 与实时会话
 
-Qwen adapter 使用 `StreamingRequest` 和 `StreamingCapabilities`。`Endpoint`、`APIKey`、`Model`、server VAD、握手/写入/结束超时属于 adapter 配置，不与 HTTP `ClientConfig` 或 `SegmentedSessionConfig` 混用。`RealtimeSession` 串行写入每个 PCM chunk；前一次写入未完成时后续 `Push` 会背压，绝不覆盖或跳过音频。
+Qwen adapter 使用 `StreamingRequest` 和 `StreamingCapabilities`。`Endpoint`、`APIKey`、`Model`、server VAD、握手/写入/结束超时属于 adapter 配置，不与 HTTP `ClientConfig` 或 `SegmentedSessionConfig` 混用。未启用 Recovery 时，`RealtimeSession` 串行写入每个 PCM chunk，前一次写入未完成时后续 `Push` 会背压。启用 Recovery 后，Push 将音频复制进有界缓存，单 worker 串行发送并恢复连接，不覆盖或跳过音频。
+
+### 通用超时和实时断线恢复
+
+应用默认开启恢复；SDK 独立使用时显式设置 `RealtimeSessionConfig.Recovery = &asr.RealtimeRecoveryConfig{}`，nil 表示不启用重连。不依赖输入侧 WebSocket、VAD 或 Viper，也适用于 CLI 文件输入。直接调用 HTTP provider 且 context 没有 deadline 时，SDK 增加 8s 兜底；已有 deadline（包括大于 8s 的值）优先，建议通过 Client 统一管理预算。
+
+| 应用配置 `asr.realtimeRecovery.*` | SDK Recovery 字段 | 默认值 | 作用 |
+|---|---|---|---|
+| `enabled` | Recovery 是否非 nil | 应用 true；SDK nil | 开关有界缓存和重连；false 不会关闭 adapter 本身的超时 |
+| `maxAttempts` | `MaxAttempts` | 3 | 没有可确认音频进展时的最大重连次数；有新时间边界确认后重置，范围 1–10 |
+| `backoff` | `Backoff` | 250ms | 首次重试等待，后续指数增长 |
+| `maxBackoff` | `MaxBackoff` | 2s | 重试等待上限 |
+| `connectTimeout` | `ConnectTimeout` | 10s | 一次连接建立及协议初始化的总上限 |
+| `operationTimeout` | `OperationTimeout` | 5s | 一次音频、上下文或结束指令写入上限；adapter 自身更短的限制仍有效 |
+| `readTimeout` | `ReadTimeout` | 45s | 没有任何 WebSocket 数据或 pong 的最长等待；每约 15s ping |
+| `finishTimeout` | `FinishTimeout` | 20s | 从 CloseInput 开始，排空缓存、重连重放及尾部结果的总上限，不因重连重置 |
+| `maxBufferedAudio` | `MaxBufferedAudio` | 120s | 未确认音频缓存上限（按音频时长），不是单次发包长度；至少 100ms |
+
+所有时长建议使用 Go duration 字符串，配置可全部省略；SDK 字段零值使用上述默认值。SDK `StreamingRequest.ReadTimeout` 适用于直接 provider 使用，负值可禁用 transport watchdog；Recovery 启用时由其 `ReadTimeout` 覆盖。HTTP timeout 与此处配置互不替代。
+
+恢复顺序：失败连接关闭 → 撤回该连接未完成的 preview/provisional → 发布非 final `asr.error`（`stream_reconnecting`，附 attempt、replay_start_at/end_at）→ 有限退避 → 同一 provider/model 新建连接 → 恢复支持的上下文 → 从最后可确认的音频边界重放缓存 → 继续发送新增音频。新连接使用不同 result ID 前缀，避免句子 ID 重用覆盖旧结果；时间戳转换回原始输入时间线。鉴权、配置、请求和不可恢复响应错误不重试，首次连接失败直接返回调用方。
+
+这是**至少一次尝试发送**，不是 exactly-once，也不是供应商会话 resume：稳定结果可能重复，声学状态和说话人 ID 可能变化，并可能产生额外费用。不能按文本内容强制去重，因为用户可能真的重复说话。只有 final 的有效 EndAt 才用于清理其之前的音频，写入成功、partial、pong 均不算识别确认。没有可靠 final 时间戳的服务会保守保留整个未确认范围，因此即使已显示 stable，长会话也可能达到缓存上限；应结合供应商能力调整上限或显式分会话，不能假定 stable 文本一定释放缓存。
+
+缓存默认在 16kHz mono PCM16 下约 3.84MB/会话（另有复制、事件和 provider 缓冲开销）。满后返回 `audio_buffer_limit` 并结束会话，不静默淘汰旧音频；次数耗尽返回 `reconnect_exhausted`。调用方继续消费 Events 并处理 Wait 错误；最终失败后应提示用户、保存原始录音或显式创建新会话。供应商返回 pong 但不产出识别结果不是传输故障，不能仅凭文本空闲误判真实静音；这种情形由缓存上限和结束总超时兜底。
+
+Provider 扩展实现必须遵守传入 context、使 Close 可中断网络 I/O，并保证 Events/Done 最终关闭；通用层不使用无法回收的 goroutine 强行包装不遵守取消的第三方实现。已内置的 adapter 同时有 handshake/write/finish 超时和传输心跳。
 
 实时会话只支持单声道 raw PCM16，Qwen adapter 接受 8kHz 或 16kHz。`RecognitionContext.Prompt` 和去重后的 `Terms` 按行组成 `input_audio_transcription.corpus.text`；语言不是 `auto` 时发送 `language`，否则可取第一个 language hint。partial 的已确认 `text` 与可变 `stash` 原样拼接，最终 `transcript` 产生 `provider_final` stable 结果。
 

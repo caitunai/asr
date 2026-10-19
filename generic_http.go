@@ -120,6 +120,8 @@ func (p *GenericHTTPProvider) Transcribe(ctx context.Context, request ProviderRe
 		return ProviderResult{}, ErrInvalidRequest
 	}
 	startedAt := time.Now()
+	ctx, cancel := httpRequestContext(ctx)
+	defer cancel()
 	responseBody := genericHTTPResponse{}
 	httpRequest := p.client.R().
 		SetContext(ctx).

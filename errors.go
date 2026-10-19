@@ -22,4 +22,6 @@ var (
 	ErrPCMBufferLimit           = errors.New("asr pcm buffer limit exceeded")
 	ErrStreamingBackpressure    = errors.New("asr streaming backpressure")
 	ErrContextUpdateUnsupported = errors.New("asr context update unsupported")
+	ErrStreamReconnecting       = errors.New("asr stream reconnecting with audio replay")
+	ErrReconnectExhausted       = errors.New("asr stream reconnect attempts exhausted")
 )

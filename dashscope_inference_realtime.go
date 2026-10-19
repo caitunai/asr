@@ -545,6 +545,7 @@ func (s *dashScopeInferenceStream) writeMessage(ctx context.Context, messageType
 func (s *dashScopeInferenceStream) readLoop() {
 	loop := realtimeJSONReadLoop[dashScopeServerEvent]{
 		ctx:              s.ctx,
+		readTimeout:      s.request.ReadTimeout,
 		conn:             s.conn,
 		cancel:           s.cancel,
 		events:           s.events,

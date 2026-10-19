@@ -109,6 +109,8 @@ func (p *MicrosoftHTTPProvider) Transcribe(
 	ctx context.Context,
 	request ProviderRequest,
 ) (ProviderResult, error) {
+	ctx, cancel := httpRequestContext(ctx)
+	defer cancel()
 	if p == nil || p.client == nil || request.RequestID == "" || len(request.Audio.Data) < microsoftWAVHeaderSize ||
 		request.Audio.Format != AudioFormatWAVPCM16 || request.Audio.SampleRate != microsoftHTTPAudioSampleRate ||
 		request.Audio.Channels != 1 || microsoftAudioDuration(request.Audio) > microsoftHTTPMaxAudioDuration {

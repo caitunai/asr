@@ -148,7 +148,7 @@ func NewOpenAIRealtimeProvider(cfg OpenAIRealtimeConfig) (*OpenAIRealtimeProvide
 	if err != nil {
 		return nil, err
 	}
-	return &OpenAIRealtimeProvider{cfg: normalized, dialer: *websocket.DefaultDialer}, nil
+	return &OpenAIRealtimeProvider{cfg: normalized, dialer: realtimeDialer(normalized.HandshakeTimeout)}, nil
 }
 
 func (p *OpenAIRealtimeProvider) Name() string { return p.cfg.Name }
@@ -459,6 +459,7 @@ func (s *openAIRealtimeStream) writeEvent(ctx context.Context, event map[string]
 func (s *openAIRealtimeStream) readLoop() {
 	realtimeJSONReadLoop[openAIRealtimeServerEvent]{
 		ctx:              s.ctx,
+		readTimeout:      s.request.ReadTimeout,
 		conn:             s.conn,
 		cancel:           s.cancel,
 		events:           s.events,

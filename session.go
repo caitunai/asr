@@ -1274,6 +1274,12 @@ func nextRevision(existing SegmentResult) int {
 
 func classifyEventError(err error) string {
 	switch {
+	case errors.Is(err, ErrStreamReconnecting):
+		return "stream_reconnecting"
+	case errors.Is(err, ErrReconnectExhausted):
+		return "reconnect_exhausted"
+	case errors.Is(err, ErrPCMBufferLimit):
+		return "audio_buffer_limit"
 	case errors.Is(err, ErrNoSpeech):
 		return "no_speech"
 	case errors.Is(err, ErrRequestTimeout):

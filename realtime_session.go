@@ -25,6 +25,7 @@ type RealtimeContextUpdateConfig struct {
 }
 
 type RealtimeSessionConfig struct {
+	Recovery           *RealtimeRecoveryConfig
 	Request            StreamingRequest
 	EventBuffer        int
 	MinimumWaitTimeout time.Duration
@@ -98,6 +99,14 @@ func NewRealtimeSession(
 	if cfg.MinimumWaitTimeout <= 0 {
 		cfg.MinimumWaitTimeout = defaultRealtimeWaitTimeout
 	}
+	if cfg.Recovery != nil {
+		recovery, err := normalizeRealtimeRecovery(*cfg.Recovery)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Recovery = &recovery
+		cfg.MinimumWaitTimeout = max(cfg.MinimumWaitTimeout, recovery.FinishTimeout)
+	}
 	if cfg.ChunkDuration <= 0 {
 		cfg.ChunkDuration = defaultRealtimeChunk
 	}
@@ -122,7 +131,13 @@ func NewRealtimeSession(
 	}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
-	stream, err := provider.Start(sessionCtx, cfg.Request)
+	var stream ProviderStream
+	var err error
+	if cfg.Recovery == nil {
+		stream, err = provider.Start(sessionCtx, cfg.Request)
+	} else {
+		stream, err = newRecoveringStream(sessionCtx, provider, cfg.Request, *cfg.Recovery)
+	}
 	if err != nil {
 		cancel()
 		return nil, errors.Join(ErrProviderRequest, err)
@@ -363,7 +378,7 @@ func (s *RealtimeSession) run(ctx context.Context) {
 			usage = cloneRecognitionUsage(providerEvent.Usage)
 		}
 		if providerEvent.Err != nil {
-			emittedError = true
+			emittedError = emittedError || providerEvent.IsFinal
 			s.emitProviderError(providerEvent)
 			continue
 		}
@@ -500,6 +515,10 @@ func trimRealtimeContextHistory(items []string, maxRunes int) []string {
 }
 
 func (s *RealtimeSession) emitProviderError(providerEvent ProviderStreamEvent) {
+	message := "ASR realtime request failed"
+	if errors.Is(providerEvent.Err, ErrStreamReconnecting) {
+		message = "ASR reconnecting and replaying buffered audio; duplicate text is possible"
+	}
 	index := 0
 	if providerEvent.ResultID != "" {
 		index = s.resultState(providerEvent.ResultID).index
@@ -511,7 +530,8 @@ func (s *RealtimeSession) emitProviderError(providerEvent ProviderStreamEvent) {
 		Model:     s.provider.Model(),
 		Error: &EventError{
 			Code:         classifyEventError(providerEvent.Err),
-			Message:      "ASR realtime request failed",
+			Message:      message,
+			Recovery:     providerEvent.Recovery,
 			RequestID:    providerEvent.ResultID,
 			SegmentIndex: index,
 			Final:        providerEvent.IsFinal,

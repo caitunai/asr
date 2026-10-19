@@ -152,7 +152,7 @@ func NewGeminiRealtimeProvider(cfg GeminiRealtimeConfig) (*GeminiRealtimeProvide
 	if err != nil {
 		return nil, err
 	}
-	return &GeminiRealtimeProvider{cfg: normalized, dialer: *websocket.DefaultDialer}, nil
+	return &GeminiRealtimeProvider{cfg: normalized, dialer: realtimeDialer(normalized.HandshakeTimeout)}, nil
 }
 
 func (p *GeminiRealtimeProvider) Name() string { return p.cfg.Name }
@@ -451,8 +451,10 @@ func (s *geminiRealtimeStream) readLoop() {
 	defer func() { _ = s.conn.Close() }()
 	defer close(s.events)
 	defer close(s.done)
+	stopHeartbeat := startRealtimeHeartbeat(s.ctx, s.conn, s.request.ReadTimeout)
+	defer stopHeartbeat()
 	for {
-		_, payload, err := s.conn.ReadMessage()
+		_, payload, err := readRealtimeMessage(s.conn, s.request.ReadTimeout)
 		if err != nil {
 			if !s.hasWaitResult() {
 				if s.ctx.Err() != nil {

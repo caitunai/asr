@@ -295,6 +295,7 @@ func (s *vllmRealtimeStream) writeJSONLocked(ctx context.Context, event map[stri
 func (s *vllmRealtimeStream) readLoop() {
 	realtimeJSONReadLoop[vllmRealtimeServerEvent]{
 		ctx:              s.ctx,
+		readTimeout:      s.request.ReadTimeout,
 		conn:             s.conn,
 		cancel:           s.cancel,
 		events:           s.events,
